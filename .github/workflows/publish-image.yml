@@ -1,0 +1,35 @@
+{
+  "name": "study_package",
+  // Ubuntu보다 가벼운 Debian 베이스 사용
+  "image": "ghcr.io/kimpossible-ty/geodesic:latest",
+  "features": {
+    // GitHub CLI를 컨테이너에 공식적으로 주입합니다.
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "containerEnv": {
+    // 컨테이너 내의 프로젝트 경로를 폰트 탐색 경로로 지정
+    "TYPST_FONT_PATHS": "${containerWorkspaceFolder}/fonts",
+    "WORKSPACE": "${containerWorkspaceFolder}",
+    "PATH": "${containerWorkspaceFolder}/.venv/bin:/home/vscode/.local/bin:${env:PATH}"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+            "myriad-dreamin.tinymist",
+            "analytic-signal.preview-pdf",
+            "PKief.material-icon-theme",
+            "Google.gemini",
+            "ms-python.python"
+      ],
+      "settings": {
+				"python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+				"python.terminal.activateEnvironment": true
+			}
+    }
+  },
+  // 바이너리를 직접 다루는 대신, 패키지 관리자 스타일로 정리
+  "postCreateCommand": "uv sync",
+  "postStartCommand": "git pull",
+  "postAttachCommand": "git pull"
+}
