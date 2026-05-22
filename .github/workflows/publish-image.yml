@@ -2,7 +2,7 @@ name: Publish study_package Environment
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main" ]
     paths:
       - '.devcontainer/Dockerfile'
       - '.github/workflows/publish-image.yml'
