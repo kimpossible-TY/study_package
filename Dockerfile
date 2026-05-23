@@ -4,7 +4,7 @@ FROM mcr.microsoft.com/devcontainers/base:debian
 # 1. 필수 시스템 패키지 설치
 RUN apt-get update && apt-get install -y \
     gawk make curl git lsof tmux fonts-noto-cjk \
-    stow cmake gnupg ripgrep tar unzip fd-find \
+    stow cmake gnupg ripgrep tar unzip fd-find ca-certificates \
     && apt-get clean
 
 # 2. Typst 설치
@@ -27,7 +27,7 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
     && mv /root/.local/bin/agy /usr/local/bin/  # 시스템 전역에서 사용할 수 있도록 경로 이동
 
 # 6. Neovim
-RUN curl -LO https://github.com/neovim/neovim/releases/latest/download/nvim-linux64.tar.gz \
+RUN curl -fLo https://github.com/neovim/neovim/releases/latest/download/nvim-linux64.tar.gz \
     && tar -C /usr/local --strip-components=1 -xzf nvim-linux64.tar.gz \
     && rm nvim-linux64.tar.gz
 
