@@ -4,7 +4,7 @@ FROM mcr.microsoft.com/devcontainers/base:debian
 # 1. 필수 시스템 패키지 설치
 RUN apt-get update && apt-get install -y \
     gawk make curl git lsof tmux fonts-noto-cjk \
-    stow cmake gnupg ripgrep tar unzip fd-find ca-certificates \
+    stow cmake gnupg ripgrep tar unzip fd-find ca-certificates nodejs \
     && apt-get clean
 
 # 2. Typst 설치
@@ -30,7 +30,8 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
 RUN curl -LO https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz \
     && rm -rf /opt/nvim-linux-x86_64 \
     && tar -C /usr/local --strip-components=1 -xzf nvim-linux-x86_64.tar.gz \
-    && rm nvim-linux-x86_64.tar.gz
+    && rm nvim-linux-x86_64.tar.gz \
+    $$ && npm install -g tree-sitter-cli
 
 # 7. 구체적인 CLI 명령어 링크 처리 (fd-find 예외 처리)
 RUN ln -sf $(which fdfind) /usr/local/bin/fd
