@@ -20,3 +20,7 @@ RUN echo '[[ $- == *i* ]] && source /usr/local/share/blesh/ble.sh' >> /etc/bash.
 # 4. uv 설치
 ENV UV_INSTALL_DIR="/usr/local/bin"
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 5. antigravity CLI 설치
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
+    && mv /root/.local/bin/agy /usr/local/bin/  # 시스템 전역에서 사용할 수 있도록 경로 이동
