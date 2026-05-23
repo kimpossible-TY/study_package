@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - '.devcontainer/Dockerfile'
+      - 'Dockerfile'
       - '.github/workflows/publish-image.yml'
   workflow_dispatch: 
 
