@@ -4,7 +4,7 @@ FROM mcr.microsoft.com/devcontainers/base:debian
 # 1. 필수 시스템 패키지 설치
 RUN apt-get update && apt-get install -y \
     gawk make curl git lsof tmux fonts-noto-cjk \
-    stow \
+    stow cmake gnupg software-properties-common ripgrep tar unzip fd-find \
     && apt-get clean
 
 # 2. Typst 설치
@@ -30,3 +30,11 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
 RUN curl -LO https://github.com/neovim/neovim/releases/latest/download/nvim-linux64.tar.gz \
     && tar -C /usr/local --strip-components=1 -xzf nvim-linux64.tar.gz \
     && rm nvim-linux64.tar.gz
+
+# 7. 구체적인 CLI 명령어 링크 처리 (fd-find 예외 처리)
+RUN ln -sf $(which fdfind) /usr/local/bin/fd
+
+# 8. Node.js 설치 (Mason.nvim 및 백엔드 런타임용 필수)
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
