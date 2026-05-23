@@ -26,8 +26,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
     && mv /root/.local/bin/agy /usr/local/bin/  # 시스템 전역에서 사용할 수 있도록 경로 이동
 
-# 6. Neovim
-RUN curl -fLo https://github.com/neovim/neovim/releases/latest/download/nvim-linux64.tar.gz \
+# 6. Neovim 설치
+RUN curl -fLo nvim-linux64.tar.gz https://github.com/neovim/neovim/releases/latest/download/nvim-linux64.tar.gz \
     && tar -C /usr/local --strip-components=1 -xzf nvim-linux64.tar.gz \
     && rm nvim-linux64.tar.gz
 
