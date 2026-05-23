@@ -4,7 +4,7 @@ FROM mcr.microsoft.com/devcontainers/base:debian
 # 1. 필수 시스템 패키지 설치
 RUN apt-get update && apt-get install -y \
     gawk make curl git lsof tmux fonts-noto-cjk \
-    stow cmake gnupg software-properties-common ripgrep tar unzip fd-find \
+    stow cmake gnupg ripgrep tar unzip fd-find \
     && apt-get clean
 
 # 2. Typst 설치
