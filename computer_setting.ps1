@@ -4,11 +4,14 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 # Scoop 설치
 irm get.scoop.sh | iex
 
+# install git first for add extracs bucket
+scoop install gh git
+
 # add extras bucket
 scoop bucket add extras
 
-# install gh
-scoop install gh git neovim powertoys
+# install packages
+scoop install gh neovim powertoys
 
 # 자동완성
 # 관리자 권한 없이 현재 사용자 계정에 최신 PSReadLine(2.2.6)을 강제 설치합니다.
