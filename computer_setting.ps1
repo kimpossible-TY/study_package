@@ -11,7 +11,7 @@ scoop install gh git
 scoop bucket add extras
 
 # install packages
-scoop install gh neovim powertoys
+scoop install gh neovim powertoys make gcc
 
 # 자동완성
 # 관리자 권한 없이 현재 사용자 계정에 최신 PSReadLine(2.2.6)을 강제 설치합니다.
