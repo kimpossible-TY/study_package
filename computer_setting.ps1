@@ -12,8 +12,6 @@ scoop install gh git
 
 # Add the 'extras' bucket for richer developer utilities
 scoop bucket add extras
-# Add the 'nerd-fonts' bucket for beautiful terminal typography
-scoop bucket add nerd-fonts
 
 # Install standard core packages
 scoop install neovim powertoys make gcc d2coding-nerd-font oh-my-posh
