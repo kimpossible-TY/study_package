@@ -32,7 +32,7 @@ New-Item -Type File -Path $PROFILE -Force
 # Generate comprehensive configuration content for the PowerShell Profile
 $ProfileContent = @"
 # Import advanced terminal line editing
-Import-Module PSReadLine -RequiredVersion 2.2.6
+Import-Module PSReadLine -RequiredVersion 2.2.6 -Force
 Set-PSReadLineOption -PredictionSource History
 Set-PSReadLineOption -PredictionViewStyle ListView
 
