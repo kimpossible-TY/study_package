@@ -7,6 +7,9 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 # Install Scoop (Minimalist Windows Package Manager)
 irm get.scoop.sh | iex
 
+# start new terminal keeping current session
+$env:Path += ";$env:USERPROFILE\scoop\shims"
+
 # Install Git and GitHub CLI first to unlock the 'extras' bucket and repositories
 scoop install gh git
 
