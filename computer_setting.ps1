@@ -11,7 +11,15 @@ irm get.scoop.sh | iex
 $env:Path += ";$env:USERPROFILE\scoop\shims"
 
 # Install Git and GitHub CLI first to unlock the 'extras' bucket and repositories
-scoop install gh git
+scoop install gh
+
+# Forcefully halt the installation and update infrastructure services
+Stop-Service -Name msiserver -Force -ErrorAction SilentlyContinue
+Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+Stop-Process -Name msiexec, tiworker, trustedinstaller -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer" -Name "InProgress" -ErrorAction SilentlyContinue
+# scoop uninstall 7zip
+scoop install git
 
 # Add the 'extras' bucket for richer developer utilities
 scoop bucket add extras
