@@ -1,3 +1,9 @@
+"""Configuration catalog and target search patterns.
+
+Defines the directory roots, process names, and file/directory name patterns
+used to scan and clean each supported browser (Chrome, Edge, Firefox, Brave).
+"""
+
 from __future__ import annotations
 
 import os
@@ -7,21 +13,48 @@ from .models import BrowserDefinition
 
 
 class BrowserCatalog:
+    """Manages the catalog of supported browsers and their cleaning configurations."""
+
     def __init__(self) -> None:
+        """Initializes the browser catalog by building definitions from environment paths."""
         self._browsers = self._build_catalog()
 
     def all(self) -> list[BrowserDefinition]:
+        """Returns all configured browser definitions.
+
+        Returns:
+            A list of BrowserDefinition instances.
+        """
         return list(self._browsers)
 
     def select(self, browser_key: str) -> list[BrowserDefinition]:
+        """Filters the browser catalog by a specific browser key.
+
+        Args:
+            browser_key: The target browser key (e.g., 'chrome') or 'all'.
+
+        Returns:
+            A list containing the matched BrowserDefinition(s).
+        """
         if browser_key == "all":
             return self.all()
         return [browser for browser in self._browsers if browser.key == browser_key]
 
     def keys(self) -> tuple[str, ...]:
+        """Gets all browser keys in the catalog.
+
+        Returns:
+            A tuple of string keys (e.g., ('chrome', 'edge', ...)).
+        """
         return tuple(browser.key for browser in self._browsers)
 
+
     def _build_catalog(self) -> list[BrowserDefinition]:
+        """Constructs the browser catalog definitions, resolving OS environment variables.
+
+        Returns:
+            A list of configured BrowserDefinition objects.
+        """
         local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
         app_data = Path(os.environ.get("APPDATA", ""))
         chromium_files = TargetPatterns.chromium_files()
@@ -68,9 +101,13 @@ class BrowserCatalog:
 
 
 class TargetPatterns:
+    """Provides file and directory search patterns for different browser families."""
+
     @staticmethod
     def chromium_files() -> tuple[str, ...]:
+        """Returns standard file names containing Chromium privacy data (e.g., history, cookies)."""
         return (
+
             "History",
             "History-journal",
             "Login Data",
@@ -92,7 +129,9 @@ class TargetPatterns:
 
     @staticmethod
     def chromium_directories() -> tuple[str, ...]:
+        """Returns directory names containing Chromium cache and temporary data."""
         return (
+
             "Cache",
             "Code Cache",
             "GPUCache",
@@ -111,7 +150,9 @@ class TargetPatterns:
 
     @staticmethod
     def firefox_files() -> tuple[str, ...]:
+        """Returns standard file names containing Firefox SQLite databases and jsonlz4 session files."""
         return (
+
             "places.sqlite",
             "places.sqlite-wal",
             "places.sqlite-shm",
@@ -135,7 +176,9 @@ class TargetPatterns:
 
     @staticmethod
     def firefox_directories() -> tuple[str, ...]:
+        """Returns directory names containing Firefox cache and session backup data."""
         return (
+
             "cache2",
             "startupCache",
             "sessionstore-backups",

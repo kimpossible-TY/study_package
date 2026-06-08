@@ -1,3 +1,9 @@
+"""Command-line interface and argument parsing.
+
+Provides factories to construct the ArgumentParser and map incoming CLI arguments
+to the structured CleanerOptions model.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -6,7 +12,17 @@ from .models import CleanerOptions
 
 
 class ArgumentParserFactory:
+    """Factory for generating the command-line argument parser."""
+
     def build(self, browser_choices: tuple[str, ...]) -> argparse.ArgumentParser:
+        """Constructs and configures the ArgumentParser object.
+
+        Args:
+            browser_choices: Valid keys of browsers currently supported/configured.
+
+        Returns:
+            An configured instance of argparse.ArgumentParser.
+        """
         parser = argparse.ArgumentParser(
             description="Clean Windows browser search, login, cookie, cache, and session data with TUI output."
         )
@@ -35,10 +51,25 @@ class ArgumentParserFactory:
 
 
 class CleanerOptionsFactory:
+    """Factory to map command-line arguments to structured CleanerOptions."""
+
     def __init__(self, parser_factory: ArgumentParserFactory) -> None:
+        """Initializes the factory with an argument parser builder.
+
+        Args:
+            parser_factory: The factory used to construct the parser.
+        """
         self._parser_factory = parser_factory
 
     def from_args(self, browser_choices: tuple[str, ...]) -> CleanerOptions:
+        """Parses the CLI args and constructs a CleanerOptions configuration instance.
+
+        Args:
+            browser_choices: Valid browser keys for choice validation.
+
+        Returns:
+            An instance of CleanerOptions.
+        """
         parser = self._parser_factory.build(browser_choices)
         args = parser.parse_args()
         return CleanerOptions(
@@ -47,3 +78,4 @@ class CleanerOptionsFactory:
             close_browsers=args.kill,
             browser_key=args.browser,
         )
+
