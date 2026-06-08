@@ -1,0 +1,1 @@
+"""Windows browser cleaner package."""
