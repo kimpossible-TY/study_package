@@ -1,17 +1,28 @@
 # ==============================================================================
-# Windows bootstrapper for a WSL-owned development environment
+# Windows user-level development environment bootstrapper
 # ==============================================================================
 
 $ErrorActionPreference = "Stop"
 
-$DistroName = "Ubuntu"
+$ScoopPackages = @(
+    "7zip",
+    "curl",
+    "fd",
+    "fzf",
+    "gcc",
+    "gh",
+    "make",
+    "neovim",
+    "nodejs-lts",
+    "oh-my-posh",
+    "python",
+    "ripgrep",
+    "unzip"
+)
 
-function Test-IsAdministrator {
-    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $Principal = [Security.Principal.WindowsPrincipal]::new($Identity)
-
-    return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+$ExtraPackages = @(
+    "powertoys"
+)
 
 function Test-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -19,100 +30,97 @@ function Test-Command {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-function Invoke-Wsl {
-    param([Parameter(Mandatory = $true)][string]$Command)
-
-    wsl.exe -d $DistroName -- bash -lc $Command
-}
-
-Write-Host "`nPreparing WSL development environment..." -ForegroundColor Cyan
-
-if (!(Test-IsAdministrator)) {
-    Write-Host "Administrator authorization is required. Relaunching with elevated privileges..." -ForegroundColor Yellow
-    $Arguments = @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "`"$PSCommandPath`""
+function Invoke-Step {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
     )
-    Start-Process -FilePath "powershell.exe" -ArgumentList $Arguments -Verb RunAs
-    exit 0
+
+    Write-Host "`n$Message" -ForegroundColor Cyan
+    & $ScriptBlock
 }
 
-if (!(Test-Command "wsl.exe")) {
-    throw "wsl.exe is not available on this Windows installation. Enable WSL first, then rerun this script."
+function Install-ScoopPackage {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $Installed = scoop list 2>$null | Select-String -Pattern "^\s*$([regex]::Escape($Name))\s"
+    if ($Installed) {
+        Write-Host "Already installed: $Name" -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "Installing: $Name" -ForegroundColor Cyan
+    scoop install $Name
 }
 
-$InstalledDistros = @(wsl.exe --list --quiet 2>$null)
-if ($InstalledDistros -notcontains $DistroName) {
-    Write-Host "Installing WSL distribution: $DistroName" -ForegroundColor Cyan
-    wsl.exe --install -d $DistroName
-    Write-Host "`nWSL installation has been requested. Reboot if Windows asks for it, complete the Ubuntu first-run user setup, then rerun this script." -ForegroundColor Yellow
-    exit 0
+Write-Host "`nPreparing personal Windows development environment..." -ForegroundColor Cyan
+
+if (![Environment]::Is64BitOperatingSystem) {
+    throw "This script requires 64-bit Windows because PowerToys is installed for 64-bit Windows."
 }
 
-Write-Host "Updating packages and installing developer tools inside WSL..." -ForegroundColor Cyan
-Invoke-Wsl @'
-set -euo pipefail
+Invoke-Step "Allowing local user PowerShell scripts..." {
+    try {
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction Stop
+    }
+    catch {
+        Write-Host "Execution policy is controlled by a more specific Windows policy. Continuing with the current policy." -ForegroundColor Yellow
+    }
+}
 
-export DEBIAN_FRONTEND=noninteractive
+if (!(Test-Command "scoop")) {
+    Invoke-Step "Installing Scoop for the current user..." {
+        Invoke-RestMethod -Uri "https://get.scoop.sh" | Invoke-Expression
+    }
+}
+else {
+    Write-Host "Scoop is already installed." -ForegroundColor DarkGray
+}
 
-sudo apt-get update
-sudo apt-get install -y \
-  build-essential \
-  ca-certificates \
-  curl \
-  gpg \
-  make \
-  neovim \
-  unzip
+Invoke-Step "Installing Git for Scoop..." {
+    Install-ScoopPackage "git"
+}
 
-if ! command -v gh >/dev/null 2>&1; then
-  sudo mkdir -p -m 755 /etc/apt/keyrings
-  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg |
-    sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
-  sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
-    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-  sudo apt-get update
-  sudo apt-get install -y gh
-fi
+Invoke-Step "Updating Scoop..." {
+    scoop update
+}
 
-mkdir -p "$HOME/.local/bin" "$HOME/.config/nvim"
+Invoke-Step "Installing base Scoop packages..." {
+    foreach ($Package in $ScoopPackages) {
+        Install-ScoopPackage $Package
+    }
+}
 
-if ! command -v oh-my-posh >/dev/null 2>&1; then
-  curl -fsSL https://ohmyposh.dev/install.sh | bash -s -- -d "$HOME/.local/bin"
-fi
+Invoke-Step "Adding Scoop extras bucket..." {
+    if (!(scoop bucket list | Select-String -Pattern "^\s*extras\s*$")) {
+        scoop bucket add extras
+    }
+    else {
+        Write-Host "Bucket already added: extras" -ForegroundColor DarkGray
+    }
+}
 
-if [ ! -f "$HOME/.config/nvim/init.lua" ]; then
-  curl -fsSL \
-    https://raw.githubusercontent.com/kimpossible-TY/dotfiles/main/nvim/.config/nvim/init.lua \
-    -o "$HOME/.config/nvim/init.lua"
-fi
+Invoke-Step "Installing 64-bit Windows PowerToys..." {
+    foreach ($Package in $ExtraPackages) {
+        Install-ScoopPackage $Package
+    }
+}
 
-BASHRC="$HOME/.bashrc"
-START="# >>> study_package WSL dev shell >>>"
+Invoke-Step "Preparing Neovim configuration folder..." {
+    $NvimConfigDir = Join-Path $env:LOCALAPPDATA "nvim"
+    New-Item -ItemType Directory -Path $NvimConfigDir -Force | Out-Null
 
-if ! grep -Fq "$START" "$BASHRC"; then
-  cat >> "$BASHRC" <<'BASHRC_BLOCK'
+    $InitLua = Join-Path $NvimConfigDir "init.lua"
+    if (!(Test-Path -LiteralPath $InitLua)) {
+        Invoke-RestMethod `
+            -Uri "https://raw.githubusercontent.com/kimpossible-TY/dotfiles/main/nvim/.config/nvim/init.lua" `
+            -OutFile $InitLua
+    }
+    else {
+        Write-Host "Neovim config already exists: $InitLua" -ForegroundColor DarkGray
+    }
+}
 
-# >>> study_package WSL dev shell >>>
-export PATH="$HOME/.local/bin:$PATH"
-
-if command -v nvim >/dev/null 2>&1; then
-  alias vi='nvim'
-  alias vim='nvim'
-fi
-
-if command -v oh-my-posh >/dev/null 2>&1; then
-  eval "$(oh-my-posh init bash)"
-fi
-# <<< study_package WSL dev shell <<<
-BASHRC_BLOCK
-fi
-'@
-
-Write-Host "`nWSL development environment configured successfully." -ForegroundColor Green
-Write-Host "All downloaded tools and configuration files were installed inside $DistroName." -ForegroundColor Green
-Write-Host "Open it with: wsl -d $DistroName" -ForegroundColor Gray
+Write-Host "`nPersonal Windows development environment configured successfully." -ForegroundColor Green
+Write-Host "Installed with Scoop in the current user account." -ForegroundColor Green
+Write-Host "PowerToys was installed from the Scoop extras bucket for 64-bit Windows." -ForegroundColor Green
