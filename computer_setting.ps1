@@ -6,6 +6,13 @@ $ErrorActionPreference = "Stop"
 
 $DistroName = "Ubuntu"
 
+function Test-IsAdministrator {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $Principal = [Security.Principal.WindowsPrincipal]::new($Identity)
+
+    return $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function Test-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -19,6 +26,19 @@ function Invoke-Wsl {
 }
 
 Write-Host "`nPreparing WSL development environment..." -ForegroundColor Cyan
+
+if (!(Test-IsAdministrator)) {
+    Write-Host "Administrator authorization is required. Relaunching with elevated privileges..." -ForegroundColor Yellow
+    $Arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "`"$PSCommandPath`""
+    )
+    Start-Process -FilePath "powershell.exe" -ArgumentList $Arguments -Verb RunAs
+    exit 0
+}
 
 if (!(Test-Command "wsl.exe")) {
     throw "wsl.exe is not available on this Windows installation. Enable WSL first, then rerun this script."
