@@ -1,93 +1,98 @@
 # ==============================================================================
-# 1. Environment & Execution Policy Setup
+# Windows bootstrapper for a WSL-owned development environment
 # ==============================================================================
-# Relaxation of script execution policy for the current user session
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
-# Install Scoop (Minimalist Windows Package Manager)
-irm get.scoop.sh | iex
+$ErrorActionPreference = "Stop"
 
-# start new terminal keeping current session
-$env:Path += ";$env:USERPROFILE\scoop\shims"
+$DistroName = "Ubuntu"
 
-# Install Git and GitHub CLI first to unlock the 'extras' bucket and repositories
-scoop install gh
+function Test-Command {
+    param([Parameter(Mandatory = $true)][string]$Name)
 
-# Forcefully halt the installation and update infrastructure services
-Stop-Service -Name msiserver -Force -ErrorAction SilentlyContinue
-Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-Stop-Process -Name msiexec, tiworker, trustedinstaller -Force -ErrorAction SilentlyContinue
-Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer" -Name "InProgress" -ErrorAction SilentlyContinue
-# scoop uninstall 7zip
-scoop install git
-
-# Add the 'extras' bucket for richer developer utilities
-scoop bucket add extras
-
-# Install standard core packages
-scoop install neovim powertoys make gcc oh-my-posh
-
-# ==============================================================================
-# 2. PowerShell Profile, Autocompletion & Theme Configuration
-# ==============================================================================
-Write-Host "`nConfiguring PowerShell Profile, Autocompletion, and Theme..." -ForegroundColor Cyan
-
-# Force install the latest PSReadLine for high-performance context caching without admin rights
-Install-Module -Name PSReadLine -RequiredVersion 2.2.6 -Force -SkipPublisherCheck -AllowClobber -Scope CurrentUser
-
-# Ensure the profile file and its directory structurally exist
-New-Item -Type File -Path $PROFILE -Force
-
-# Generate comprehensive configuration content for the PowerShell Profile
-$ProfileContent = @"
-# Import advanced terminal line editing
-Import-Module PSReadLine -RequiredVersion 2.2.6 -Force
-Set-PSReadLineOption -PredictionSource History
-Set-PSReadLineOption -PredictionViewStyle ListView
-
-# Neovim alias configuration
-if (Get-Command nvim -ErrorAction SilentlyContinue) {
-    Set-Alias vi nvim
-    Set-Alias vim nvim
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-# Initialize Oh My Posh with a highly readable default theme
-oh-my-posh init pwsh --config '`$env:USERPROFILE\AppData\Local\Programs\oh-my-posh\themes\jandedobbeleer.omp.json' | Invoke-Expression
-"@
+function Invoke-Wsl {
+    param([Parameter(Mandatory = $true)][string]$Command)
 
-# Write content to the profile using cross-platform UTF8 encoding
-Set-Content -Path $PROFILE -Value $ProfileContent -Encoding UTF8
-
-Write-Host "✅ PowerShell profile configured successfully." -ForegroundColor Green
-
-# ==============================================================================
-# 3. Neovim Configuration Synchronization
-# ==============================================================================
-Write-Host "`nSynchronizing Neovim configuration files..." -ForegroundColor Cyan
-
-# Define local configuration matrix path
-$NvimConfigPath = "$env:LOCALAPPDATA\nvim"
-if (!(Test-Path $NvimConfigPath)) {
-    New-Item -Type Directory -Path $NvimConfigPath -Force
+    wsl.exe -d $DistroName -- bash -lc $Command
 }
 
-# Pull down the customized init.lua setup securely if not already present
-$InitLuaPath = Join-Path $NvimConfigPath "init.lua"
-if (!(Test-Path $InitLuaPath)) {
-    $RawUrl = "https://raw.githubusercontent.com/kimpossible-TY/dotfiles/main/nvim/.config/nvim/init.lua"
-    try {
-        Write-Host "Downloading init.lua from remote repository..." -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $RawUrl -OutFile $InitLuaPath
-        Write-Host "init.lua successfully deployed!" -ForegroundColor Green
-    } catch {
-        Write-Host "Failed to pull init.lua. Verify active network gateway or raw URL endpoint." -ForegroundColor Red
-    }
-} else {
-    Write-Host "init.lua already local. Skipping downstream synchronization." -ForegroundColor Yellow
+Write-Host "`nPreparing WSL development environment..." -ForegroundColor Cyan
+
+if (!(Test-Command "wsl.exe")) {
+    throw "wsl.exe is not available on this Windows installation. Enable WSL first, then rerun this script."
 }
 
-# ==============================================================================
-# 4. Execution Finish & Post-Install Action Reminders
-# ==============================================================================
-Write-Host "`n System configuration script executed successfully!" -ForegroundColor Green
-Write-Host "------------------------------------------------------------------------" -ForegroundColor Gray
+$InstalledDistros = @(wsl.exe --list --quiet 2>$null)
+if ($InstalledDistros -notcontains $DistroName) {
+    Write-Host "Installing WSL distribution: $DistroName" -ForegroundColor Cyan
+    wsl.exe --install -d $DistroName
+    Write-Host "`nWSL installation has been requested. Reboot if Windows asks for it, complete the Ubuntu first-run user setup, then rerun this script." -ForegroundColor Yellow
+    exit 0
+}
+
+Write-Host "Updating packages and installing developer tools inside WSL..." -ForegroundColor Cyan
+Invoke-Wsl @'
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  ca-certificates \
+  curl \
+  gpg \
+  make \
+  neovim \
+  unzip
+
+if ! command -v gh >/dev/null 2>&1; then
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg |
+    sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+  sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
+    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  sudo apt-get update
+  sudo apt-get install -y gh
+fi
+
+mkdir -p "$HOME/.local/bin" "$HOME/.config/nvim"
+
+if ! command -v oh-my-posh >/dev/null 2>&1; then
+  curl -fsSL https://ohmyposh.dev/install.sh | bash -s -- -d "$HOME/.local/bin"
+fi
+
+if [ ! -f "$HOME/.config/nvim/init.lua" ]; then
+  curl -fsSL \
+    https://raw.githubusercontent.com/kimpossible-TY/dotfiles/main/nvim/.config/nvim/init.lua \
+    -o "$HOME/.config/nvim/init.lua"
+fi
+
+BASHRC="$HOME/.bashrc"
+START="# >>> study_package WSL dev shell >>>"
+
+if ! grep -Fq "$START" "$BASHRC"; then
+  cat >> "$BASHRC" <<'BASHRC_BLOCK'
+
+# >>> study_package WSL dev shell >>>
+export PATH="$HOME/.local/bin:$PATH"
+
+if command -v nvim >/dev/null 2>&1; then
+  alias vi='nvim'
+  alias vim='nvim'
+fi
+
+if command -v oh-my-posh >/dev/null 2>&1; then
+  eval "$(oh-my-posh init bash)"
+fi
+# <<< study_package WSL dev shell <<<
+BASHRC_BLOCK
+fi
+'@
+
+Write-Host "`nWSL development environment configured successfully." -ForegroundColor Green
+Write-Host "All downloaded tools and configuration files were installed inside $DistroName." -ForegroundColor Green
+Write-Host "Open it with: wsl -d $DistroName" -ForegroundColor Gray
