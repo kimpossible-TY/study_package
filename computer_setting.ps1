@@ -1,3 +1,4 @@
+
 # ==============================================================================
 # Windows user-level development environment bootstrapper
 # ==============================================================================
@@ -30,6 +31,82 @@ function Test-Command {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Update-ProcessPath {
+    $PathParts = @(
+        [Environment]::GetEnvironmentVariable("Path", "Machine"),
+        [Environment]::GetEnvironmentVariable("Path", "User"),
+        (Join-Path $env:USERPROFILE "scoop\shims")
+    )
+
+    $env:Path = ($PathParts | Where-Object { $_ }) -join [IO.Path]::PathSeparator
+}
+
+function Test-GitWorkTreeClean {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (!(Test-Path -LiteralPath (Join-Path $Path ".git"))) {
+        return $true
+    }
+
+    $Status = git -C $Path status --porcelain 2>$null
+    return [string]::IsNullOrWhiteSpace(($Status -join ""))
+}
+
+function Test-ScoopBucketsClean {
+    $BucketsDir = Join-Path $env:USERPROFILE "scoop\buckets"
+    if (!(Test-Path -LiteralPath $BucketsDir)) {
+        return $true
+    }
+
+    $DirtyBuckets = @(
+        Get-ChildItem -LiteralPath $BucketsDir -Directory |
+            Where-Object { !(Test-GitWorkTreeClean -Path $_.FullName) } |
+            Select-Object -ExpandProperty Name
+    )
+
+    if ($DirtyBuckets.Count -gt 0) {
+        Write-Host "Skipping Scoop update because bucket repo has local changes: $($DirtyBuckets -join ', ')" -ForegroundColor Yellow
+        return $false
+    }
+
+    return $true
+}
+
+function Set-VSCodeGitPath {
+    $GitPath = Join-Path $env:USERPROFILE "scoop\apps\git\current\cmd\git.exe"
+    if (!(Test-Path -LiteralPath $GitPath)) {
+        Write-Host "Git executable was not found for VS Code configuration: $GitPath" -ForegroundColor Yellow
+        return
+    }
+
+    $VSCodeUserDir = Join-Path $env:APPDATA "Code\User"
+    $SettingsPath = Join-Path $VSCodeUserDir "settings.json"
+
+    New-Item -ItemType Directory -Path $VSCodeUserDir -Force | Out-Null
+
+    if (Test-Path -LiteralPath $SettingsPath) {
+        $SettingsText = [IO.File]::ReadAllText($SettingsPath, [Text.Encoding]::UTF8)
+        if ([string]::IsNullOrWhiteSpace($SettingsText)) {
+            $Settings = [pscustomobject]@{}
+        }
+        else {
+            $Settings = $SettingsText | ConvertFrom-Json
+        }
+    }
+    else {
+        $Settings = [pscustomobject]@{}
+    }
+
+    $Settings | Add-Member -NotePropertyName "git.path" -NotePropertyValue $GitPath -Force
+    $Settings | Add-Member -NotePropertyName "git.ignoreMissingGitWarning" -NotePropertyValue $false -Force
+
+    $Json = $Settings | ConvertTo-Json -Depth 20
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($SettingsPath, $Json + [Environment]::NewLine, $Utf8NoBom)
+
+    Write-Host "VS Code Git path configured: $GitPath" -ForegroundColor DarkGray
+}
+
 function Invoke-Step {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
@@ -43,8 +120,8 @@ function Invoke-Step {
 function Install-ScoopPackage {
     param([Parameter(Mandatory = $true)][string]$Name)
 
-    $Installed = scoop list 2>$null | Select-String -Pattern "^\s*$([regex]::Escape($Name))\s"
-    if ($Installed) {
+    $null = scoop prefix $Name 2>$null
+    if ($LASTEXITCODE -eq 0) {
         Write-Host "Already installed: $Name" -ForegroundColor DarkGray
         return
     }
@@ -54,6 +131,8 @@ function Install-ScoopPackage {
 }
 
 Write-Host "`nPreparing personal Windows development environment..." -ForegroundColor Cyan
+
+Update-ProcessPath
 
 if (![Environment]::Is64BitOperatingSystem) {
     throw "This script requires 64-bit Windows because PowerToys is installed for 64-bit Windows."
@@ -71,6 +150,7 @@ Invoke-Step "Allowing local user PowerShell scripts..." {
 if (!(Test-Command "scoop")) {
     Invoke-Step "Installing Scoop for the current user..." {
         Invoke-RestMethod -Uri "https://get.scoop.sh" | Invoke-Expression
+        Update-ProcessPath
     }
 }
 else {
@@ -81,8 +161,14 @@ Invoke-Step "Installing Git for Scoop..." {
     Install-ScoopPackage "git"
 }
 
+Invoke-Step "Configuring VS Code Git path..." {
+    Set-VSCodeGitPath
+}
+
 Invoke-Step "Updating Scoop..." {
-    scoop update
+    if (Test-ScoopBucketsClean) {
+        scoop update
+    }
 }
 
 Invoke-Step "Installing base Scoop packages..." {
@@ -92,7 +178,8 @@ Invoke-Step "Installing base Scoop packages..." {
 }
 
 Invoke-Step "Adding Scoop extras bucket..." {
-    if (!(scoop bucket list | Select-String -Pattern "^\s*extras\s*$")) {
+    $ExtrasBucketDir = Join-Path $env:USERPROFILE "scoop\buckets\extras"
+    if (!(Test-Path -LiteralPath $ExtrasBucketDir)) {
         scoop bucket add extras
     }
     else {
