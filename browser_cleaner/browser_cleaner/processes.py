@@ -72,4 +72,3 @@ class BrowserProcessManager:
             return ""
         # The first column of tasklist CSV is the image/process name
         return tasklist_line.split(",", 1)[0].strip().strip('"').lower()
-
