@@ -66,6 +66,11 @@ class ArgumentParserFactory:
             help="run non-destructive local verification checks",
         )
         parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="show detailed scan progress, paths, and result tables",
+        )
+        parser.add_argument(
             "--wipe-vscode-profile",
             action="store_true",
             help="remove complete local VS Code Stable and Insiders user-data profiles; requires --apply and a strong prompt",
@@ -121,4 +126,5 @@ class CleanerOptionsFactory:
             wipe_vscode_profile=args.wipe_vscode_profile,
             vscode_backup=args.backup_vscode_profile,
             browser_profile_paths=tuple(args.browser_profile_paths or ()),
+            verbose=args.verbose,
         )

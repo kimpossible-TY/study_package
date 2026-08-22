@@ -16,6 +16,8 @@ python .\main.py --apply
 
 The first command is always dry run. The second first shows the exact browser paths, requires `CLEAN` for ordinary browser data, and then requires a separate strong confirmation for every account, credential, tunnel, environment token, or full profile. `--yes` cannot bypass sensitive confirmations.
 
+The default output is a compact summary. Add `--verbose` when you need per-profile scan progress, exact result tables, or the full account-audit details.
+
 Run it on Windows. A non-Windows host reports discovery only and refuses Windows-oriented destructive work.
 
 ## Browser categories

@@ -62,6 +62,7 @@ class CleanerOptions:
         wipe_vscode_profile: Remove the complete local VS Code user-data profile.
         vscode_backup: A directory into which the safe VS Code backup is written.
         browser_profile_paths: Exact browser-profile paths selected for a full wipe.
+        verbose: Show detailed scan progress and result tables.
     """
 
     apply_changes: bool
@@ -74,6 +75,7 @@ class CleanerOptions:
     wipe_vscode_profile: bool = False
     vscode_backup: Path | None = None
     browser_profile_paths: tuple[Path, ...] = ()
+    verbose: bool = False
 
 
 @dataclass(frozen=True)

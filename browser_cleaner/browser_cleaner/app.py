@@ -60,7 +60,7 @@ class BrowserCleanerApp:
             profile_finder=ProfileFinder(),
             process_manager=BrowserProcessManager(),
             path_cleaner=PathCleaner(),
-            ui=TerminalUI(),
+            ui=TerminalUI(verbose=options.verbose or options.audit_accounts),
         )
 
     def run(self) -> int:
@@ -110,8 +110,8 @@ class BrowserCleanerApp:
         if wants_developer_auth and not self._options.verify:
             action_results.extend(self._developer_auth.remove_supported(self._apply_changes, self._ui.confirm_sensitive))
 
-        self._ui.print_results(browser_results)
         if browser_categories:
+            self._ui.print_results(browser_results)
             self._ui.print_summary(browser_results, self._apply_changes)
         self._ui.print_action_results(action_results)
 
