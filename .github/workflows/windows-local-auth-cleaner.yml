@@ -3,6 +3,8 @@ name: Build Windows Local Auth Cleaner
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "windows-local-auth-cleaner-v*"
 
