@@ -1,0 +1,54 @@
+name: Build Windows Local Auth Cleaner
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "windows-local-auth-cleaner-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-executable:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows_local_auth_cleaner
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: windows_local_auth_cleaner/pyproject.toml
+
+      - name: Install project and build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+
+      - name: Build terminal executable
+        run: >-
+          pyinstaller --noconfirm --clean --onefile
+          --name windows-local-auth-cleaner
+          --collect-all textual
+          --hidden-import browser_cleaner.textual_app
+          main.py
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-local-auth-cleaner
+          path: windows_local_auth_cleaner/dist/windows-local-auth-cleaner.exe
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" "dist/windows-local-auth-cleaner.exe" --generate-notes

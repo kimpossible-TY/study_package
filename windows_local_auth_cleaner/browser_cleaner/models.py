@@ -63,6 +63,8 @@ class CleanerOptions:
         vscode_backup: A directory into which the safe VS Code backup is written.
         browser_profile_paths: Exact browser-profile paths selected for a full wipe.
         verbose: Show detailed scan progress and result tables.
+        interactive: Launch the Textual interface.
+        no_tui: Force the plain command-line interface.
     """
 
     apply_changes: bool
@@ -76,6 +78,8 @@ class CleanerOptions:
     vscode_backup: Path | None = None
     browser_profile_paths: tuple[Path, ...] = ()
     verbose: bool = False
+    interactive: bool = False
+    no_tui: bool = False
 
 
 @dataclass(frozen=True)

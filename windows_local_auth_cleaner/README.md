@@ -1,22 +1,70 @@
 # Windows Local Authentication Cleaner
 
-`browser_cleaner` safely audits and removes selected **local, current-user** browser privacy data and developer authentication evidence on Windows. It does not delete a cloud account, revoke remote sessions/tokens, or access another Windows user account.
+`windows_local_auth_cleaner` safely audits and removes selected **local, current-user** browser privacy data and developer authentication evidence on Windows. It does not delete a cloud account, revoke remote sessions/tokens, or access another Windows user account.
+
+## Install once and run anywhere
+
+The repository does not need to stay on the Windows machine after installation.
+
+### Option A: install as a command-line app
+
+This is the most convenient option when Python is already available:
+
+```powershell
+# Scoop is already used by the Windows setup script in this repository.
+scoop install pipx
+pipx ensurepath
+
+# Run once from the checked-out project directory.
+pipx install .
+```
+
+After that, run the app from any directory:
+
+```powershell
+windows-local-auth-cleaner
+# Short alias:
+wac
+```
+
+If the source is updated later, reinstall the local package from the updated checkout:
+
+```powershell
+pipx install . --force
+```
+
+`pipx install .` installs the application into an isolated environment. It is not an editable install, so the source checkout is not needed for normal execution.
+
+### Option B: download one standalone `.exe`
+
+The GitHub Actions workflow builds `windows-local-auth-cleaner.exe` on Windows. Download the executable from a GitHub Release or workflow artifact and run it directly:
+
+```powershell
+.\windows-local-auth-cleaner.exe
+```
+
+This option does not require Python, Textual, or the repository on the target machine. Create a release by pushing a tag such as `windows-local-auth-cleaner-v0.1.0`; the workflow attaches the executable automatically.
+
+The executable still uses optional external tools when those features are selected, such as `gh`, Git Credential Manager, or `code`. Those tools must be installed separately if needed.
 
 ## Two-command everyday use
 
 Most users need only these two commands:
 
 ```powershell
-# 1. Review every recognized browser target plus supported developer-authentication candidates.
+# Source-checkout installation, if you are running without pipx.
+python -m pip install -r requirements.txt
+
+# 1. Open the Textual interface.
 python .\main.py
 
-# 2. Apply that same cleanup.
-python .\main.py --apply
+# 2. For scripts or automation, use the plain CLI explicitly.
+python .\main.py --apply --no-tui
 ```
 
-The first command is always dry run. The second first shows the exact browser paths, requires `CLEAN` for ordinary browser data, and then requires a separate strong confirmation for every account, credential, tunnel, environment token, or full profile. `--yes` cannot bypass sensitive confirmations.
+The Textual interface starts in preview mode. Choose a browser and categories, inspect the results, then choose Apply. Browser cleanup requires typing `CLEAN`; account, credential, tunnel, environment-token, and full-profile operations each retain their own strong confirmation. `--yes` cannot bypass sensitive confirmations.
 
-The default output is a compact summary. Add `--verbose` when you need per-profile scan progress, exact result tables, or the full account-audit details.
+Use `--interactive` to force the Textual interface for a command with selectors. Use `--no-tui --verbose` for the detailed plain output.
 
 Run it on Windows. A non-Windows host reports discovery only and refuses Windows-oriented destructive work.
 
@@ -55,7 +103,7 @@ Close browsers normally first. `--kill` is an explicit, forceful compatibility o
 
 ## Account audit
 
-`python .\main.py` already provides this audit as part of the simple review flow. `--audit-accounts` remains available when you only want the account table.
+`python .\main.py` shows a compact account check in the Textual results view. Use `python .\main.py --audit-accounts --no-tui` when you only want the full account table.
 
 The audit shows only program/provider, account name or username, location or Credential Manager target, login state, automatic-removal support, and whether manual action is needed. It never displays token, password, cookie, or credential-secret values.
 

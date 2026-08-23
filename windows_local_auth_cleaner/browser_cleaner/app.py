@@ -54,13 +54,24 @@ class BrowserCleanerApp:
         """Construct the application with Windows-aware default services."""
         catalog = BrowserCatalog()
         options = CleanerOptionsFactory(ArgumentParserFactory()).from_args(catalog.keys())
+        return cls.from_options(options, catalog)
+
+    @classmethod
+    def from_options(
+        cls,
+        options: CleanerOptions,
+        catalog: BrowserCatalog | None = None,
+        ui: TerminalUI | None = None,
+    ) -> "BrowserCleanerApp":
+        """Construct the application from parsed options and injectable services."""
+        catalog = catalog or BrowserCatalog()
         return cls(
             options=options,
             catalog=catalog,
             profile_finder=ProfileFinder(),
             process_manager=BrowserProcessManager(),
             path_cleaner=PathCleaner(),
-            ui=TerminalUI(verbose=options.verbose or options.audit_accounts),
+            ui=ui or TerminalUI(verbose=options.verbose or options.audit_accounts),
         )
 
     def run(self) -> int:

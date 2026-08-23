@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "windows-local-auth-cleaner"
+version = "0.1.0"
+description = "A safe Textual TUI and CLI for reviewing local Windows browser and developer-authentication data."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.50",
+]
+
+[project.scripts]
+windows-local-auth-cleaner = "main:main"
+wac = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["browser_cleaner*"]

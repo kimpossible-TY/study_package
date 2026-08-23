@@ -2,4 +2,4 @@
 
 Subprojects:
 
-- [browser_cleaner](browser_cleaner/README.md)
+- [windows_local_auth_cleaner](windows_local_auth_cleaner/README.md)

@@ -71,6 +71,16 @@ class ArgumentParserFactory:
             help="show detailed scan progress, paths, and result tables",
         )
         parser.add_argument(
+            "--interactive",
+            action="store_true",
+            help="launch the interactive Textual interface",
+        )
+        parser.add_argument(
+            "--no-tui",
+            action="store_true",
+            help="force the plain command-line interface",
+        )
+        parser.add_argument(
             "--wipe-vscode-profile",
             action="store_true",
             help="remove complete local VS Code Stable and Insiders user-data profiles; requires --apply and a strong prompt",
@@ -127,4 +137,6 @@ class CleanerOptionsFactory:
             vscode_backup=args.backup_vscode_profile,
             browser_profile_paths=tuple(args.browser_profile_paths or ()),
             verbose=args.verbose,
+            interactive=args.interactive,
+            no_tui=args.no_tui,
         )
