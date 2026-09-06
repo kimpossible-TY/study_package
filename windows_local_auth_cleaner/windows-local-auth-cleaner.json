@@ -1,0 +1,28 @@
+{
+    "version": "0.1.0",
+    "description": "Safe one-shot cleaner for Windows local browser data and developer authentication records.",
+    "homepage": "https://github.com/kimpossible-TY/study_package",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/kimpossible-TY/study_package/releases/latest/download/windows-local-auth-cleaner.exe",
+            "bin": [
+                "windows-local-auth-cleaner.exe",
+                [
+                    "windows-local-auth-cleaner.exe",
+                    "wac"
+                ]
+            ]
+        }
+    },
+    "checkver": {
+        "github": "https://github.com/kimpossible-TY/study_package"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/kimpossible-TY/study_package/releases/download/$version/windows-local-auth-cleaner.exe"
+            }
+        }
+    }
+}

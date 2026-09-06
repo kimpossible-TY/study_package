@@ -65,6 +65,7 @@ class CleanerOptions:
         verbose: Show detailed scan progress and result tables.
         interactive: Launch the Textual interface.
         no_tui: Force the plain command-line interface.
+        one_shot: Run one-shot cleanup immediately without prompts.
     """
 
     apply_changes: bool
@@ -80,6 +81,7 @@ class CleanerOptions:
     verbose: bool = False
     interactive: bool = False
     no_tui: bool = False
+    one_shot: bool = True
 
 
 @dataclass(frozen=True)

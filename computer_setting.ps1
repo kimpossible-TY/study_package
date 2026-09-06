@@ -208,6 +208,23 @@ Invoke-Step "Preparing Neovim configuration folder..." {
     }
 }
 
+Invoke-Step "Installing Windows Local Auth Cleaner from GitHub Release..." {
+    $CleanerInstallScript = Join-Path $PSScriptRoot "windows_local_auth_cleaner\install.ps1"
+    if (Test-Path -LiteralPath $CleanerInstallScript) {
+        & $CleanerInstallScript
+    }
+    else {
+        try {
+            Invoke-RestMethod `
+                -Uri "https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1" |
+                Invoke-Expression
+        }
+        catch {
+            Write-Host "Windows Local Auth Cleaner will be installed once a GitHub release is published: $_" -ForegroundColor Yellow
+        }
+    }
+}
+
 Write-Host "`nPersonal Windows development environment configured successfully." -ForegroundColor Green
 Write-Host "Installed with Scoop in the current user account." -ForegroundColor Green
 Write-Host "PowerToys was installed from the Scoop extras bucket for 64-bit Windows." -ForegroundColor Green

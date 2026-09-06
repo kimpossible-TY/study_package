@@ -10,31 +10,10 @@ from browser_cleaner.cli import ArgumentParserFactory, CleanerOptionsFactory
 from browser_cleaner.config import BrowserCatalog
 
 
-def _is_default_invocation(options) -> bool:
-    return not any(
-        (
-            options.apply_changes,
-            options.skip_confirmation,
-            options.close_browsers,
-            options.categories,
-            options.audit_accounts,
-            options.verify,
-            options.wipe_vscode_profile,
-            options.vscode_backup,
-            options.browser_profile_paths,
-        )
-    ) and options.browser_key == "all"
-
-
 def main() -> int:
     catalog = BrowserCatalog()
     options = CleanerOptionsFactory(ArgumentParserFactory()).from_args(catalog.keys())
-    wants_tui = options.interactive or (
-        _is_default_invocation(options)
-        and not options.no_tui
-        and sys.stdin.isatty()
-        and sys.stdout.isatty()
-    )
+    wants_tui = options.interactive
     if not wants_tui:
         return BrowserCleanerApp.from_options(options, catalog).run()
 

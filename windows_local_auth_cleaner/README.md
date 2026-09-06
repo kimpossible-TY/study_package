@@ -6,67 +6,82 @@
 
 The repository does not need to stay on the Windows machine after installation.
 
-### Option A: install as a command-line app
+### Option A: one-line install from GitHub Release (Recommended)
 
-This is the most convenient option when Python is already available:
-
-```powershell
-# Scoop is already used by the Windows setup script in this repository.
-scoop install pipx
-pipx ensurepath
-
-# Run once from the checked-out project directory.
-pipx install .
-```
-
-After that, run the app from any directory:
+Run this one-liner in PowerShell (no Python, Git clone, or repository checkout required):
 
 ```powershell
-windows-local-auth-cleaner
-# Short alias:
-wac
+irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1 | iex
 ```
 
-If the source is updated later, reinstall the local package from the updated checkout:
+This installer:
+- Downloads the latest standalone `windows-local-auth-cleaner.exe` directly from the GitHub Release.
+- Installs it into `$env:LOCALAPPDATA\Programs\windows-local-auth-cleaner`.
+- Creates the `wac` command alias.
+- Configures your user `PATH` (and Scoop shims if present) so `windows-local-auth-cleaner` and `wac` can be invoked immediately from any terminal.
+
+To install a specific version or uninstall:
+```powershell
+# Specific tag:
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Tag "v0.1.0"
+
+# Uninstall:
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Uninstall
+```
+
+### Option B: install with Scoop
+
+If you use [Scoop](https://scoop.sh), install directly using the Scoop manifest:
 
 ```powershell
-pipx install . --force
+scoop install https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/windows-local-auth-cleaner.json
 ```
 
-`pipx install .` installs the application into an isolated environment. It is not an editable install, so the source checkout is not needed for normal execution.
+Scoop downloads the binary from GitHub Releases and shims both `windows-local-auth-cleaner` and `wac` into your PATH.
 
-### Option B: download one standalone `.exe`
+### Option C: download standalone `.exe` directly
 
-The GitHub Actions workflow builds `windows-local-auth-cleaner.exe` on Windows. Download the executable from a GitHub Release or workflow artifact and run it directly:
+Download `windows-local-auth-cleaner.exe` from the latest [GitHub Release](https://github.com/kimpossible-TY/study_package/releases) and run it:
 
 ```powershell
 .\windows-local-auth-cleaner.exe
 ```
 
-This option does not require Python, Textual, or the repository on the target machine. Create a release by pushing a tag such as `windows-local-auth-cleaner-v0.1.0`; the workflow attaches the executable automatically.
+The GitHub Actions workflow builds and attaches `windows-local-auth-cleaner.exe` automatically whenever a release is created, a tag (`v*` or `windows-local-auth-cleaner-v*`) is pushed, or the workflow is dispatched.
 
-The executable still uses optional external tools when those features are selected, such as `gh`, Git Credential Manager, or `code`. Those tools must be installed separately if needed.
+### Option D: install via pipx (Python environment)
 
-## Two-command everyday use
-
-Most users need only these two commands:
+If Python is already available:
 
 ```powershell
-# Source-checkout installation, if you are running without pipx.
-python -m pip install -r requirements.txt
-
-# 1. Open the Textual interface.
-python .\main.py
-
-# 2. For scripts or automation, use the plain CLI explicitly.
-python .\main.py --apply --no-tui
+scoop install pipx
+pipx ensurepath
+pipx install .
 ```
 
-The Textual interface starts in preview mode. Choose a browser and categories, inspect the results, then choose Apply. Browser cleanup requires typing `CLEAN`; account, credential, tunnel, environment-token, and full-profile operations each retain their own strong confirmation. `--yes` cannot bypass sensitive confirmations.
+## Everyday use: one-shot cleanup by default
 
-Use `--interactive` to force the Textual interface for a command with selectors. Use `--no-tui --verbose` for the detailed plain output.
+By default, the tool executes unified cleanup in **one shot** without requiring interactive prompts or manual browser closing:
 
-Run it on Windows. A non-Windows host reports discovery only and refuses Windows-oriented destructive work.
+```powershell
+# 1. Run one-shot cleanup immediately (closes running browsers automatically, applies cleanup without prompts)
+python .\main.py
+# Or if installed via pipx:
+wac
+
+# 2. Preview targets without deleting anything (dry-run mode):
+python .\main.py --dry-run
+
+# 3. Open the interactive Textual TUI:
+python .\main.py --interactive
+```
+
+In default one-shot mode:
+- Running browsers are **automatically closed** (first attempting a graceful shutdown via `taskkill /im` so SQLite handles and cache flushes cleanly, falling back to force-close if still active). No manual intervention or `--kill` flag is needed.
+- Browser privacy data and developer authentication records are cleaned directly without stopping for manual input.
+- To preview changes safely without modifying anything, pass `--dry-run`.
+- To require manual confirmation prompts, pass `--prompt`.
+- To prevent automatically closing running browsers, pass `--keep-browsers`.
 
 ## Browser categories
 
@@ -83,23 +98,23 @@ Use `--category` once or repeatedly to select only what is needed:
 | `developer-auth` | supported developer authentication only |
 | `full-profile` | only with an exact profile path or VS Code profile option |
 
-With no selector, the two-command mode selects every normal browser category **and** supported developer-authentication candidates. Use categories only when you want a narrower advanced operation.
+With no selector, one-shot cleanup selects every normal browser category **and** supported developer-authentication candidates. Use categories only when you want a narrower operation.
 
 ```powershell
-# Preview Chrome cookies/site data only; no history/password selection.
+# One-shot cleanup for Chrome cookies/site data only:
 python .\main.py --browser chrome --category site-data
 
-# Delete Firefox session files after the standard confirmation.
-python .\main.py --browser firefox --category sessions --apply
+# Preview Chrome cookies/site data only (dry-run):
+python .\main.py --browser chrome --category site-data --dry-run
 
-# Delete history and cache across supported browsers.
-python .\main.py --category history --category cache --apply
+# Delete Firefox session files:
+python .\main.py --browser firefox --category sessions
 
-# --yes skips only the ordinary browser CLEAN prompt.
-python .\main.py --category cache --apply --yes
+# Require explicit confirmation before deleting:
+python .\main.py --prompt
 ```
 
-Close browsers normally first. `--kill` is an explicit, forceful compatibility option and can lose unsaved work. Cookie/site-data removal usually signs websites out, but does not reliably sign out Chrome, Edge, Firefox, or Brave sync accounts. Turn sync off and sign out in each browser profile/account menu first; deleting while sync is active can affect other devices.
+Running browsers are automatically closed during cleanup to ensure database files are not locked. Cookie/site-data removal usually signs websites out, but does not reliably sign out Chrome, Edge, Firefox, or Brave sync accounts. Turn sync off and sign out in each browser profile/account menu first; deleting while sync is active can affect other devices.
 
 ## Account audit
 

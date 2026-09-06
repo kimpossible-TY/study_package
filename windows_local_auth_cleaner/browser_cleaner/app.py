@@ -76,9 +76,10 @@ class BrowserCleanerApp:
 
     def run(self) -> int:
         self._ui.setup()
+        mode_label = "one-shot cleanup" if self._apply_changes else "dry run"
         self._ui.header(
             "Windows Local Authentication Cleaner",
-            "dry run by default | browser privacy data | developer authentication",
+            f"{mode_label} | browser privacy data | developer authentication",
         )
         if os.name != "nt":
             self._ui.warning("This cleaner targets Windows. No Windows destructive action will run on this host.")
@@ -117,9 +118,9 @@ class BrowserCleanerApp:
             action_results.extend(self._wipe_browser_profiles())
         if self._options.wipe_vscode_profile and not self._options.verify:
             self._ui.warning("VS Code profile wipe can remove settings, keybindings, snippets, workspace and extension state, and local chat/session data.")
-            action_results.extend(self._vscode.wipe(self._apply_changes, self._ui.confirm_sensitive))
+            action_results.extend(self._vscode.wipe(self._apply_changes, self._confirm_sensitive))
         if wants_developer_auth and not self._options.verify:
-            action_results.extend(self._developer_auth.remove_supported(self._apply_changes, self._ui.confirm_sensitive))
+            action_results.extend(self._developer_auth.remove_supported(self._apply_changes, self._confirm_sensitive))
 
         if browser_categories:
             self._ui.print_results(browser_results)
@@ -208,6 +209,10 @@ class BrowserCleanerApp:
                 continue
             browser_name, profile, process_names = matched
             running = self._process_manager.running_processes(process_names)
+            if running and self._apply_changes and self._options.close_browsers:
+                self._ui.warning(f"{browser_name} is running. Automatically closing: {', '.join(sorted(running))}")
+                self._process_manager.close_processes(process_names)
+                running = self._process_manager.running_processes(process_names)
             if running:
                 results.append(ActionResult(browser_name, profile.name, str(profile), "full-profile", "locked", "browser is running; close it normally before a full-profile wipe"))
                 continue
@@ -215,7 +220,7 @@ class BrowserCleanerApp:
                 results.append(ActionResult(browser_name, profile.name, str(profile), "full-profile", "dry-run", "would remove the exact complete local browser profile"))
                 continue
             phrase = f"WIPE BROWSER PROFILE {profile}"
-            if not self._ui.confirm_sensitive(f"{browser_name} profile '{profile}'", phrase):
+            if not self._confirm_sensitive(f"{browser_name} profile '{profile}'", phrase):
                 results.append(ActionResult(browser_name, profile.name, str(profile), "full-profile", "manual", "strong confirmation declined"))
                 continue
             clean_result = self._path_cleaner.clean(CleanTarget(browser_name, profile.name, profile, "full-profile", profile), True)
@@ -226,14 +231,19 @@ class BrowserCleanerApp:
         running = self._process_manager.running_processes(process_names)
         if not running:
             return
-        if self._options.close_browsers:
-            if not self._apply_changes:
-                self._ui.warning(f"{browser_name} is running. Dry run will not force-close it; --kill only acts with --apply.")
-                return
-            self._ui.warning(f"{browser_name} is running. --kill force-closes: {', '.join(sorted(running))}")
-            self._process_manager.close_processes(process_names)
+        if self._apply_changes:
+            if self._options.close_browsers:
+                self._ui.warning(f"{browser_name} is running. Automatically closing: {', '.join(sorted(running))}")
+                self._process_manager.close_processes(process_names)
+            else:
+                self._ui.warning(f"{browser_name} is running. Automatic closing disabled; some files may be locked.")
             return
-        self._ui.warning(f"{browser_name} is running. Close it normally; otherwise some files may be locked. --kill is forceful.")
+        self._ui.warning(f"{browser_name} is running. Dry run will not close it; live cleanup closes it automatically: {', '.join(sorted(running))}")
+
+    def _confirm_sensitive(self, subject: str, phrase: str) -> bool:
+        if self._options.skip_confirmation:
+            return True
+        return self._ui.confirm_sensitive(subject, phrase)
 
     def _browser_cleanup_categories(self) -> tuple[str, ...]:
         if self._options.verify:

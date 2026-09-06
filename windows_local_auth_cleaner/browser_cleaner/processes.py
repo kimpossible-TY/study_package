@@ -7,6 +7,7 @@ utilities (`tasklist` and `taskkill`).
 from __future__ import annotations
 
 import subprocess
+import time
 from typing import Iterable
 
 
@@ -44,20 +45,61 @@ class BrowserProcessManager:
                 running.add(process_name)
         return running
 
-    def close_processes(self, process_names: Iterable[str]) -> None:
-        """Forcefully terminates all instances of the specified process names.
+    def close_processes(
+        self,
+        process_names: Iterable[str],
+        graceful: bool = True,
+        timeout: float = 2.0,
+    ) -> None:
+        """Closes all instances of the specified process names.
+
+        Attempts graceful termination first (via `taskkill /im`) to allow browsers to release
+        locks and persist state cleanly. If processes remain after the timeout, forcefully
+        terminates them (`taskkill /f /im`).
 
         Args:
             process_names: Iterable of process executable names to close.
+            graceful: Whether to attempt graceful termination before force-killing.
+            timeout: Seconds to wait for graceful exit before falling back to force-kill.
         """
-        for process_name in process_names:
-            # Run taskkill with force flag (/f) and image name (/im)
-            subprocess.run(
-                ["taskkill", "/f", "/im", process_name],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        wanted = list(dict.fromkeys(process_names))
+        if not wanted:
+            return
+
+        if graceful:
+            for process_name in wanted:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/im", process_name],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                except FileNotFoundError:
+                    return
+
+            deadline = time.time() + max(0.0, timeout)
+            poll_interval = 0.2
+            while time.time() < deadline:
+                if not self.running_processes(wanted):
+                    return
+                time.sleep(poll_interval)
+
+        # Force-kill any remaining processes
+        still_running = self.running_processes(wanted) if graceful else wanted
+        for process_name in still_running:
+            try:
+                subprocess.run(
+                    ["taskkill", "/f", "/im", process_name],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except FileNotFoundError:
+                return
+
+        if still_running:
+            time.sleep(0.2)
 
     def _parse_process_name(self, tasklist_line: str) -> str:
         """Parses the process name from a single CSV line returned by tasklist.

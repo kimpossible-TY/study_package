@@ -107,8 +107,10 @@ class TerminalUI:
         answer = input("Type CLEAN to continue: ").strip()
         return answer == "CLEAN"
 
-    def confirm_sensitive(self, subject: str, phrase: str) -> bool:
-        """Require a purpose-specific prompt that ``--yes`` can never bypass."""
+    def confirm_sensitive(self, subject: str, phrase: str, skip_prompt: bool = False) -> bool:
+        """Require a purpose-specific prompt unless skip_prompt is enabled."""
+        if skip_prompt:
+            return True
         print()
         self.warning(f"Sensitive local-authentication or full-profile operation: {subject}")
         self.warning("This operation can be irreversible and may remove more than a website session.")

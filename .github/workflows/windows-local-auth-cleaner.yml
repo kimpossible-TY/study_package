@@ -2,11 +2,20 @@ name: Build Windows Local Auth Cleaner
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to create/update (e.g. v0.1.0 or latest)"
+        required: false
+        default: "latest"
+        type: string
   push:
     branches:
       - main
     tags:
+      - "v*"
       - "windows-local-auth-cleaner-v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -49,8 +58,29 @@ jobs:
           path: windows_local_auth_cleaner/dist/windows-local-auth-cleaner.exe
           if-no-files-found: error
 
-      - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" "dist/windows-local-auth-cleaner.exe" --generate-notes
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ inputs.tag_name }}'
+          } elseif ('${{ github.ref_type }}' -eq 'tag') {
+            '${{ github.ref_name }}'
+          } elseif ('${{ github.event.release.tag_name }}') {
+            '${{ github.event.release.tag_name }}'
+          } else {
+            'latest'
+          }
+
+          if (-not $tag) { $tag = 'latest' }
+
+          $exists = gh release view $tag 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Updating existing release $tag with binary..."
+            gh release upload $tag "dist/windows-local-auth-cleaner.exe" --clobber
+          } else {
+            Write-Host "Creating new release $tag and uploading binary..."
+            gh release create $tag "dist/windows-local-auth-cleaner.exe" --title "Windows Local Auth Cleaner $tag" --generate-notes
+          }
