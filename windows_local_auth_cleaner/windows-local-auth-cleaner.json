@@ -12,6 +12,11 @@
                     "windows-local-auth-cleaner.exe",
                     "wac"
                 ]
+            ],
+            "post_install": [
+                "$downloads = Join-Path $env:USERPROFILE 'Downloads'",
+                "if (!(Test-Path -LiteralPath $downloads)) { New-Item -ItemType Directory -Path $downloads -Force | Out-Null }",
+                "Copy-Item -LiteralPath (Join-Path $dir 'windows-local-auth-cleaner.exe') -Destination (Join-Path $downloads 'windows-local-auth-cleaner.exe') -Force"
             ]
         }
     },

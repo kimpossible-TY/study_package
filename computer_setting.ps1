@@ -208,20 +208,35 @@ Invoke-Step "Preparing Neovim configuration folder..." {
     }
 }
 
-Invoke-Step "Installing Windows Local Auth Cleaner from GitHub Release..." {
-    $CleanerInstallScript = Join-Path $PSScriptRoot "windows_local_auth_cleaner\install.ps1"
-    if (Test-Path -LiteralPath $CleanerInstallScript) {
-        & $CleanerInstallScript
+Invoke-Step "Installing Windows Local Auth Cleaner to Downloads via Scoop..." {
+    $Manifest = Join-Path $PSScriptRoot "windows_local_auth_cleaner\windows-local-auth-cleaner.json"
+    $DownloadsDir = Join-Path $env:USERPROFILE "Downloads"
+    if (!(Test-Path -LiteralPath $DownloadsDir)) {
+        New-Item -ItemType Directory -Path $DownloadsDir -Force | Out-Null
+    }
+    $DestinationExe = Join-Path $DownloadsDir "windows-local-auth-cleaner.exe"
+
+    if (Test-Command "scoop") {
+        if (Test-Path -LiteralPath $Manifest) {
+            scoop install $Manifest
+        }
+        else {
+            scoop install "https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/windows-local-auth-cleaner.json"
+        }
+
+        # Ensure the binary is placed directly in the Downloads directory
+        $InstalledExe = Join-Path $env:USERPROFILE "scoop\apps\windows-local-auth-cleaner\current\windows-local-auth-cleaner.exe"
+        if (Test-Path -LiteralPath $InstalledExe) {
+            Copy-Item -LiteralPath $InstalledExe -Destination $DestinationExe -Force
+            Write-Host "Binary placed in Downloads directory: $DestinationExe" -ForegroundColor DarkGray
+        }
     }
     else {
-        try {
-            Invoke-RestMethod `
-                -Uri "https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1" |
-                Invoke-Expression
-        }
-        catch {
-            Write-Host "Windows Local Auth Cleaner will be installed once a GitHub release is published: $_" -ForegroundColor Yellow
-        }
+        Write-Host "Downloading binary directly to Downloads directory..." -ForegroundColor DarkGray
+        Invoke-RestMethod `
+            -Uri "https://github.com/kimpossible-TY/study_package/releases/latest/download/windows-local-auth-cleaner.exe" `
+            -OutFile $DestinationExe
+        Write-Host "Binary downloaded to Downloads directory: $DestinationExe" -ForegroundColor DarkGray
     }
 }
 
