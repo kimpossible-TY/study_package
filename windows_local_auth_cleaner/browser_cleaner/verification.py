@@ -91,6 +91,20 @@ class VerificationService:
         else:
             entries.append(VerificationEntry("Git Credential Manager", "git credential-manager github list", "no local evidence found", "no listed GitHub account was found"))
 
+        devtunnel_state = self._developer_auth.devtunnel_login_status()
+        if devtunnel_state == "not logged in":
+            status = "no local evidence found"
+            details = "CLI reports signed out; close active SSH/tunnel sessions and clear browser site data separately"
+        else:
+            status = "manual verification required"
+            details = f"{devtunnel_state}; cached CLI sign-out is not confirmed; close active SSH/tunnel sessions separately"
+        entries.append(VerificationEntry(
+            "Microsoft Dev Tunnels",
+            f"{self._developer_auth.devtunnel_command} user show",
+            status,
+            details,
+        ))
+
         credentials = self._developer_auth.credential_entries()
         if credentials is None:
             entries.append(VerificationEntry("Windows Credential Manager", "current-user supported targets", "manual verification required", "Windows Credential API is unavailable"))

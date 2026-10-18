@@ -1,9 +1,9 @@
 """Secret-safe discovery and removal of supported local developer authentication.
 
 This module intentionally uses public CLIs for GitHub CLI, Git Credential
-Manager, and VS Code Remote Tunnels.  It never opens VS Code authentication
-databases, browser databases, Credential Manager secret blobs, or registry
-environment-variable values.
+Manager, Microsoft Dev Tunnels, and VS Code Remote Tunnels. It never opens
+VS Code authentication databases, browser databases, Credential Manager secret
+blobs, or registry environment-variable values.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,6 +246,7 @@ class DeveloperAuthService:
         environment_store: UserEnvironmentStore | None = None,
         app_data: Path | None = None,
         code_commands: tuple[str, ...] = ("code", "code-insiders"),
+        devtunnel_command: str | None = None,
     ) -> None:
         self._runner = runner or CommandRunner()
         self._credential_store = credential_store or WindowsCredentialStore()
@@ -252,6 +254,7 @@ class DeveloperAuthService:
         app_data_value = os.environ.get("APPDATA")
         self._app_data = app_data if app_data is not None else (Path(app_data_value) if app_data_value else None)
         self._code_commands = code_commands
+        self._devtunnel_command = devtunnel_command or self._find_devtunnel_command()
 
     def audit(self) -> list[AccountAuditEntry]:
         """Return a complete best-effort audit; one unavailable tool never hides others."""
@@ -260,6 +263,7 @@ class DeveloperAuthService:
         entries.extend(self._audit_git_credential_manager())
         entries.extend(self._audit_vscode())
         entries.extend(self._audit_remote_tunnels())
+        entries.extend(self._audit_devtunnel())
         entries.extend(self._audit_credentials())
         entries.extend(self._audit_environment())
         return entries
@@ -302,6 +306,42 @@ class DeveloperAuthService:
             return "not registered"
         return "possibly registered"
 
+    @staticmethod
+    def _find_devtunnel_command() -> str:
+        command = shutil.which("devtunnel")
+        if command:
+            return command
+        # The bootstrapper's per-user install can be found even when this
+        # process was launched with an older PATH (for example from Explorer).
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            executable = Path(local_app_data) / "Programs" / "devtunnel" / "devtunnel.exe"
+            if executable.is_file():
+                return str(executable)
+        return "devtunnel"
+
+    @property
+    def devtunnel_command(self) -> str:
+        """The executable used for official Dev Tunnel login/logout commands."""
+        return self._devtunnel_command
+
+    def devtunnel_login_status(self) -> str:
+        """Inspect CLI login status without displaying raw output or token values."""
+        try:
+            outcome = self._runner.run((self._devtunnel_command, "user", "show"))
+        except OSError:
+            return "unknown"
+        if outcome is None:
+            return "unsupported"
+        combined = (outcome.stdout + "\n" + outcome.stderr).casefold()
+        # Only explicit status messages count as evidence. An error, empty
+        # output, or an unfamiliar/localized response must not imply sign-out.
+        if outcome.returncode in (0, 1) and re.fullmatch(r"not logged in[.!]?", combined.strip()):
+            return "not logged in"
+        if outcome.returncode == 0 and re.search(r"^\s*logged in\b", combined, re.MULTILINE):
+            return "logged in"
+        return "unknown"
+
     def remove_supported(self, apply_changes: bool, confirm: Callable[[str, str], bool]) -> list[ActionResult]:
         """Remove supported records, requesting a strong confirmation for every item.
 
@@ -312,6 +352,7 @@ class DeveloperAuthService:
         results.extend(self._remove_github_cli(apply_changes, confirm))
         results.extend(self._remove_gcm(apply_changes, confirm))
         results.extend(self._remove_tunnels(apply_changes, confirm))
+        results.extend(self._remove_devtunnel(apply_changes, confirm))
         results.extend(self._remove_credentials(apply_changes, confirm))
         results.extend(self._remove_environment(apply_changes, confirm))
         return results
@@ -392,6 +433,19 @@ class DeveloperAuthService:
             for entry in credentials
         ]
 
+    def _audit_devtunnel(self) -> list[AccountAuditEntry]:
+        state = self.devtunnel_login_status()
+        return [
+            AccountAuditEntry(
+                "Microsoft Dev Tunnels",
+                "CLI login (account details not displayed)",
+                f"{self._devtunnel_command} user show",
+                state,
+                "no" if state == "unsupported" else "yes",
+                "yes" if state in {"unsupported", "unknown"} else "no",
+            )
+        ]
+
     def _audit_environment(self) -> list[AccountAuditEntry]:
         current_names = self._environment_store.list_token_names()
         audit_names = self._environment_store.audit_names()
@@ -449,6 +503,38 @@ class DeveloperAuthService:
                     )
                 )
         return results
+
+    def _remove_devtunnel(self, apply: bool, confirm: Callable[[str, str], bool]) -> list[ActionResult]:
+        location = f"{self._devtunnel_command} user logout"
+        if self.devtunnel_login_status() == "unsupported":
+            return [self._action(
+                "Microsoft Dev Tunnels", "cached CLI login", location, "unsupported",
+                "Dev Tunnel CLI is unavailable; restore devtunnel.exe to remove cached login through the official CLI",
+            )]
+
+        # Run logout even if user show reports signed out: expired credentials
+        # may still be cached. Never delete a guessed credential-store path.
+        try:
+            result = self._remove_command(
+                "Microsoft Dev Tunnels", "cached CLI login", location,
+                (self._devtunnel_command, "user", "logout"), apply, confirm,
+                "LOGOUT DEVTUNNEL",
+                "cleared cached CLI login; close active SSH/tunnel sessions separately; browser cookies are separate",
+            )
+        except OSError:
+            return [self._action(
+                "Microsoft Dev Tunnels", "cached CLI login", location, "error",
+                "could not start Dev Tunnel logout; no exception output is shown",
+            )]
+        if result.status == "removed":
+            state = self.devtunnel_login_status()
+            if state != "not logged in":
+                status = "error" if state == "logged in" else "manual"
+                result = self._action(
+                    "Microsoft Dev Tunnels", "cached CLI login", location, status,
+                    "logout completed but sign-out could not be confirmed; check devtunnel user show manually",
+                )
+        return [result]
 
     def _remove_credentials(self, apply: bool, confirm: Callable[[str, str], bool]) -> list[ActionResult]:
         entries = self._credential_store.list_supported_entries()

@@ -122,7 +122,7 @@ Running browsers are automatically closed during cleanup to ensure database file
 
 The audit shows only program/provider, account name or username, location or Credential Manager target, login state, automatic-removal support, and whether manual action is needed. It never displays token, password, cookie, or credential-secret values.
 
-Best-effort audit sources are GitHub CLI (`gh auth status`), Git Credential Manager (`git credential-manager github list`), Chrome/Edge/Firefox/Brave profile presence (sync account state is deliberately not inspected), VS Code Stable/Insiders profile presence without reading auth databases, VS Code CLI tunnel status, supported Windows Credential Manager target metadata, and current-user environment-variable **names**. The allowlist is `GH_TOKEN`, `GITHUB_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `AZURE_DEVOPS_EXT_PAT`, and `AZURE_*`. Missing commands are `unsupported`, never fatal.
+Best-effort audit sources are GitHub CLI (`gh auth status`), Git Credential Manager (`git credential-manager github list`), Microsoft Dev Tunnels (`devtunnel user show`), Chrome/Edge/Firefox/Brave profile presence (sync account state is deliberately not inspected), VS Code Stable/Insiders profile presence without reading auth databases, VS Code CLI tunnel status, supported Windows Credential Manager target metadata, and current-user environment-variable **names**. The allowlist is `GH_TOKEN`, `GITHUB_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `AZURE_DEVOPS_EXT_PAT`, and `AZURE_*`. Missing commands are `unsupported`, never fatal.
 
 Git `user.name` and `user.email` are commit identity settings, not authentication; the tool never removes them.
 
@@ -139,6 +139,34 @@ gh auth logout --hostname github.com --user <username>
 That removes local CLI authentication only; it does **not** revoke the remote OAuth token. Git Credential Manager uses `git credential-manager github logout <username>` when installed. VS Code Remote Tunnel uses `code tunnel unregister` or `code-insiders tunnel unregister` when status indicates a possible registration.
 
 Credential Manager is accessed through the Windows Credential API, not localized `cmdkey /list` parsing. Only targets clearly related to GitHub, Git Credential Manager, VS Code, or Azure are candidates. RDP, SMB, Wi-Fi, corporate-network, and unknown credentials are not selected. Environment-token removal only operates in `HKCU\Environment`; it never changes Machine-scope variables.
+
+### Microsoft Dev Tunnels on a shared PC
+
+[`computer_setting.ps1`](../computer_setting.ps1) installs the official standalone `devtunnel.exe` into `$env:LOCALAPPDATA\Programs\devtunnel` and adds that directory to the current-user and current-session `PATH`. An already available CLI is reused. Installation does not sign in, create a tunnel, or generate an SSH key.
+
+Sign in using a device code so GitHub login can happen on your own phone or trusted computer:
+
+```powershell
+devtunnel user login -g -d
+devtunnel connect YOUR_TUNNEL_ID
+```
+
+The CLI still caches a login token on the shared PC. Deleting `devtunnel.exe` alone does not clear that token. Before cleanup, exit all SSH sessions and stop running `devtunnel connect`/`host` commands with Ctrl+C, then run:
+
+```powershell
+# Preview supported developer-auth cleanup:
+wac --category developer-auth --dry-run
+
+# Clean supported browser data and developer authentication, including Dev Tunnels:
+wac
+
+# Check developer-auth state without modifying it:
+wac --category developer-auth --verify
+```
+
+Dev Tunnel cleanup runs the official `devtunnel user logout`, then checks `devtunnel user show`. A failed logout, remaining login, or unrecognized status is reported as an error or manual check, never as confirmed removal. Audit output does not display the raw CLI output or tokens. The cleaner also looks in the bootstrapper's install directory if the executable is missing from `PATH`.
+
+This clears the CLI's cached login through its supported interface. It does not terminate existing SSH/tunnel processes, delete SSH keys or shell history, or revoke cloud tokens. Browser cookies are a separate cleanup category; a developer-auth-only cleanup does not remove them. If the CLI is missing, restore `devtunnel.exe` before cleanup rather than guessing which credential-store files to delete. See Microsoft's [authentication and logout reference](https://learn.microsoft.com/en-us/azure/developer/dev-tunnels/cli-commands) and [official executable download](https://learn.microsoft.com/en-us/azure/developer/dev-tunnels/get-started).
 
 ## VS Code
 
@@ -179,7 +207,7 @@ python .\main.py --verify
 python .\main.py --category developer-auth --verify
 ```
 
-Verification checks `gh auth status`, Git Credential Manager listing, allowlisted Credential Manager targets, tunnel status, current-user token-variable names, and selected browser artifacts. Results are conservative: `verified removed`, `no local evidence found`, `manual verification required`, or `remote revocation recommended`. VS Code account/sync state still needs the UI steps above.
+Verification checks `gh auth status`, Git Credential Manager listing, `devtunnel user show`, allowlisted Credential Manager targets, VS Code tunnel status, current-user token-variable names, and selected browser artifacts. Results are conservative: `verified removed`, `no local evidence found`, `manual verification required`, or `remote revocation recommended`. VS Code account/sync state still needs the UI steps above.
 
 For a lost or handed-off computer, separately review GitHub OAuth Applications, personal access tokens, SSH keys, and active sessions; Microsoft account devices/sessions; and Google account devices/sessions. This tool never revokes them remotely.
 
