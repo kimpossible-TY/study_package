@@ -25,6 +25,11 @@ $ExtraPackages = @(
     "powertoys"
 )
 
+# Keep the SSH shortcut in this PowerShell session without changing a profile.
+function global:mac {
+    ssh -o PubkeyAuthentication=no taeyoung@127.0.0.1
+}
+
 function Test-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -290,3 +295,4 @@ Invoke-Step "Installing Windows Local Auth Cleaner to Downloads via Scoop..." {
 Write-Host "`nPersonal Windows development environment configured successfully." -ForegroundColor Green
 Write-Host "Installed with Scoop in the current user account." -ForegroundColor Green
 Write-Host "PowerToys was installed from the Scoop extras bucket for 64-bit Windows." -ForegroundColor Green
+Write-Host "Mac SSH shortcut for this PowerShell session: mac (connect Dev Tunnel first)." -ForegroundColor Green
