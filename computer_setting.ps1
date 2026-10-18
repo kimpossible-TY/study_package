@@ -35,7 +35,8 @@ function Update-ProcessPath {
     $PathParts = @(
         [Environment]::GetEnvironmentVariable("Path", "Machine"),
         [Environment]::GetEnvironmentVariable("Path", "User"),
-        (Join-Path $env:USERPROFILE "scoop\shims")
+        (Join-Path $env:USERPROFILE "scoop\shims"),
+        (Join-Path $env:LOCALAPPDATA "Programs\devtunnel")
     )
 
     $env:Path = ($PathParts | Where-Object { $_ }) -join [IO.Path]::PathSeparator
@@ -130,6 +131,48 @@ function Install-ScoopPackage {
     scoop install $Name
 }
 
+function Install-DevTunnel {
+    $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\devtunnel"
+    $Executable = Join-Path $InstallDir "devtunnel.exe"
+    if ((Test-Command "devtunnel") -and !(Test-Path -LiteralPath $Executable -PathType Leaf)) {
+        Write-Host "Dev Tunnel CLI is already available." -ForegroundColor DarkGray
+        return
+    }
+
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+    if (!(Test-Path -LiteralPath $Executable -PathType Leaf)) {
+        $DownloadPath = Join-Path $InstallDir ("devtunnel-{0}.exe" -f [Guid]::NewGuid().ToString("N"))
+        try {
+            Invoke-WebRequest `
+                -Uri "https://aka.ms/TunnelsCliDownload/win-x64" `
+                -UseBasicParsing `
+                -OutFile $DownloadPath
+            & $DownloadPath --version
+            if ($LASTEXITCODE -ne 0) {
+                throw "The downloaded Dev Tunnel CLI could not be started."
+            }
+            Move-Item -LiteralPath $DownloadPath -Destination $Executable -Force
+        }
+        finally {
+            if (Test-Path -LiteralPath $DownloadPath) {
+                Remove-Item -LiteralPath $DownloadPath -Force
+            }
+        }
+    }
+
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $UserPathParts = @($UserPath -split [IO.Path]::PathSeparator | Where-Object { $_ })
+    if ($UserPathParts -notcontains $InstallDir) {
+        $NewUserPath = (@($UserPathParts) + $InstallDir) -join [IO.Path]::PathSeparator
+        [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+    }
+    Update-ProcessPath
+
+    Write-Host "Dev Tunnel CLI installed: $Executable" -ForegroundColor DarkGray
+    Write-Host "To sign in using your own phone/browser: devtunnel user login -g -d" -ForegroundColor DarkGray
+}
+
 Write-Host "`nPreparing personal Windows development environment..." -ForegroundColor Cyan
 
 Update-ProcessPath
@@ -175,6 +218,10 @@ Invoke-Step "Installing base Scoop packages..." {
     foreach ($Package in $ScoopPackages) {
         Install-ScoopPackage $Package
     }
+}
+
+Invoke-Step "Installing Microsoft Dev Tunnel CLI for the current user..." {
+    Install-DevTunnel
 }
 
 Invoke-Step "Adding Scoop extras bucket..." {
