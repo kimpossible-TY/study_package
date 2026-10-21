@@ -17,7 +17,8 @@
                 "$downloads = Join-Path $env:USERPROFILE 'Downloads'",
                 "if (!(Test-Path -LiteralPath $downloads)) { New-Item -ItemType Directory -Path $downloads -Force | Out-Null }",
                 "Copy-Item -LiteralPath (Join-Path $dir 'windows-local-auth-cleaner.exe') -Destination (Join-Path $downloads 'windows-local-auth-cleaner.exe') -Force"
-            ]
+            ],
+            "hash": "8a91133871f27713eb3142ddeb5eeac5c7c8361d2ae5c3e31fad647a5129d7ac"
         }
     },
     "checkver": {
