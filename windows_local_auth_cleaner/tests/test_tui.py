@@ -49,7 +49,18 @@ class TuiTests(unittest.TestCase):
             ui = TerminalUI(verbose=True)
             ui.print_results([CleanResult(target, "dry-run", "would remove")])
 
-        self.assertIn("C:/Chrome/Default/History", output.getvalue())
+        self.assertIn(str(target.path), output.getvalue())
+
+    def test_legacy_windows_output_does_not_fail_on_unicode_guidance(self) -> None:
+        buffer = io.BytesIO()
+        output = io.TextIOWrapper(buffer, encoding="cp1252")
+        with redirect_stdout(output):
+            ui = TerminalUI()
+            ui.print_vscode_manual_guidance()
+            ui.success("Finished.")
+        output.flush()
+        self.assertIn(b"Finished.", buffer.getvalue())
+        output.close()
 
 
 if __name__ == "__main__":

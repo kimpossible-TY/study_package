@@ -43,6 +43,14 @@ class TerminalUI:
         self._verbose = verbose
         self._color_enabled = bool(getattr(sys.stdout, "isatty", lambda: False)())
         self._missing_profile_browsers: list[str] = []
+        # Redirected Windows output can use a legacy code page rather than the
+        # Unicode console. Decorative symbols must not interrupt cleanup.
+        encoding = getattr(sys.stdout, "encoding", None)
+        if encoding and hasattr(sys.stdout, "reconfigure"):
+            try:
+                "\u2713\u2192".encode(encoding)
+            except UnicodeEncodeError:
+                sys.stdout.reconfigure(errors="replace")
 
     @property
     def verbose(self) -> bool:
