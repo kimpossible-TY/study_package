@@ -68,6 +68,9 @@ class FakeEnvironmentStore:
 
 class DeveloperAuthTests(unittest.TestCase):
     def setUp(self) -> None:
+        documents = patch("browser_cleaner.powershell.PowerShellProfileManager._find_documents", return_value=None)
+        documents.start()
+        self.addCleanup(documents.stop)
         self.runner = FakeRunner()
         self.credentials = FakeCredentialStore()
         self.environment = FakeEnvironmentStore()
@@ -180,6 +183,11 @@ class DevTunnelRunner(FakeRunner):
 
 
 class DevTunnelAuthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        documents = patch("browser_cleaner.powershell.PowerShellProfileManager._find_documents", return_value=None)
+        documents.start()
+        self.addCleanup(documents.stop)
+
     def _service(self, runner):
         return DeveloperAuthService(
             runner=runner,

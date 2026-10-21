@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Installs windows-local-auth-cleaner standalone executable from GitHub Releases.
@@ -10,7 +10,7 @@
     can be executed from any terminal in one shot without requiring Python.
 
 .PARAMETER Tag
-    The specific GitHub release tag to install (e.g. 'v0.1.0' or 'latest'). Defaults to 'latest'.
+    The specific GitHub release tag to install (e.g. 'v0.2.0' or 'latest'). Defaults to 'latest'.
 
 .PARAMETER InstallDir
     Target directory for the executable. Defaults to $env:LOCALAPPDATA\Programs\windows-local-auth-cleaner.
@@ -24,7 +24,7 @@
 
 .EXAMPLE
     # Install specific version:
-    .\install.ps1 -Tag "v0.1.0"
+    .\install.ps1 -Tag "v0.2.0"
 
 .EXAMPLE
     # Uninstall:
@@ -51,9 +51,8 @@ $AliasName = "wac.cmd"
 
 function Update-SessionPath {
     param([string]$Dir)
-    if ($env:Path -notlike "*$Dir*") {
-        $env:Path = "$Dir;" + $env:Path
-    }
+    $OtherEntries = @($env:Path -split [IO.Path]::PathSeparator | Where-Object { $_ -and $_ -ne $Dir })
+    $env:Path = (@($Dir) + $OtherEntries) -join [IO.Path]::PathSeparator
 }
 
 if ($Uninstall) {
@@ -72,12 +71,7 @@ if ($Uninstall) {
         Write-Host "Removed $InstallDir from User PATH." -ForegroundColor DarkGray
     }
 
-    # Remove optional scoop shim if present
-    $ScoopShimDir = Join-Path $env:USERPROFILE "scoop\shims"
-    if (Test-Path -LiteralPath $ScoopShimDir) {
-        Remove-Item (Join-Path $ScoopShimDir $BinaryName) -Force -ErrorAction SilentlyContinue
-        Remove-Item (Join-Path $ScoopShimDir $AliasName) -Force -ErrorAction SilentlyContinue
-    }
+    # Scoop-managed shims are owned by Scoop.
 
     Write-Host "✓ Windows Local Auth Cleaner uninstalled successfully.`n" -ForegroundColor Green
     return
@@ -87,10 +81,11 @@ Write-Host "`nInstalling Windows Local Auth Cleaner from GitHub Release ($Repo).
 
 # Determine download URL
 if ($Tag -eq "latest") {
-    $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$BinaryName"
+    $ReleaseBase = "https://github.com/$Repo/releases/latest/download"
 } else {
-    $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$BinaryName"
+    $ReleaseBase = "https://github.com/$Repo/releases/download/$Tag"
 }
+$DownloadUrl = "$ReleaseBase/$BinaryName"
 
 # Ensure destination directory exists
 if (!(Test-Path -LiteralPath $InstallDir)) {
@@ -101,13 +96,30 @@ $ExePath = Join-Path $InstallDir $BinaryName
 $AliasPath = Join-Path $InstallDir $AliasName
 
 Write-Host "Downloading $BinaryName from $DownloadUrl..." -ForegroundColor DarkGray
+$TemporaryExe = Join-Path $InstallDir ("download-{0}.exe" -f [Guid]::NewGuid().ToString('N'))
+$TemporaryChecksum = "$TemporaryExe.sha256"
 try {
     # Use TLS 1.2+
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ExePath -UseBasicParsing
-} catch {
-    Write-Error "Failed to download $BinaryName from $DownloadUrl. Ensure the release exists and network is available.`nError: $_"
-    return
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TemporaryExe -UseBasicParsing
+    Invoke-WebRequest -Uri "$DownloadUrl.sha256" -OutFile $TemporaryChecksum -UseBasicParsing
+    $ChecksumText = Get-Content -LiteralPath $TemporaryChecksum -Raw
+    if ($ChecksumText -notmatch '^\s*([A-Fa-f0-9]{64})\s+\*?windows-local-auth-cleaner\.exe\s*$') {
+        throw 'The release checksum file has an invalid format.'
+    }
+    $ExpectedHash = $Matches[1]
+    if ((Get-FileHash -LiteralPath $TemporaryExe -Algorithm SHA256).Hash -ne $ExpectedHash) {
+        throw 'Release SHA-256 verification failed. The existing executable was not replaced.'
+    }
+    Move-Item -LiteralPath $TemporaryExe -Destination $ExePath -Force
+}
+finally {
+    if (Test-Path -LiteralPath $TemporaryExe) {
+        Remove-Item -LiteralPath $TemporaryExe -Force
+    }
+    if (Test-Path -LiteralPath $TemporaryChecksum) {
+        Remove-Item -LiteralPath $TemporaryChecksum -Force
+    }
 }
 
 # Create 'wac.cmd' short alias wrapper in the same directory
@@ -116,26 +128,17 @@ $CmdContent = "@echo off`r`n`"%~dp0$BinaryName`" %*`r`n"
 
 # Add to User PATH if not already present
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$PathEntries = if ($UserPath) { $UserPath -split [IO.Path]::PathSeparator | Where-Object { $_ } } else { @() }
-if ($InstallDir -notin $PathEntries) {
-    $NewUserPath = ($PathEntries + $InstallDir) -join [IO.Path]::PathSeparator
-    [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
-    Write-Host "Added $InstallDir to User PATH." -ForegroundColor DarkGray
-}
+$PathEntries = @($UserPath -split [IO.Path]::PathSeparator | Where-Object { $_ -and $_ -ne $InstallDir })
+$NewUserPath = (@($InstallDir) + $PathEntries) -join [IO.Path]::PathSeparator
+[Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+Write-Host "Placed $InstallDir first in User PATH." -ForegroundColor DarkGray
 
 Update-SessionPath $InstallDir
 
-# If Scoop shims exist, also link into scoop shims for instant availability in scoop-managed terminals
-$ScoopShimDir = Join-Path $env:USERPROFILE "scoop\shims"
-if (Test-Path -LiteralPath $ScoopShimDir) {
-    try {
-        Copy-Item -LiteralPath $ExePath -Destination (Join-Path $ScoopShimDir $BinaryName) -Force
-        Copy-Item -LiteralPath $AliasPath -Destination (Join-Path $ScoopShimDir $AliasName) -Force
-        Write-Host "Also linked shims to Scoop: $ScoopShimDir" -ForegroundColor DarkGray
-    } catch {
-        # Optional best-effort
-    }
-}
+# Keep a convenient copy in Downloads. PATH takes precedence over old Scoop shims.
+$DownloadsDir = Join-Path $env:USERPROFILE 'Downloads'
+New-Item -ItemType Directory -Path $DownloadsDir -Force | Out-Null
+Copy-Item -LiteralPath $ExePath -Destination (Join-Path $DownloadsDir $BinaryName) -Force
 
 Write-Host "`n✓ Windows Local Auth Cleaner installed successfully!" -ForegroundColor Green
 Write-Host "Location: $ExePath" -ForegroundColor DarkGray

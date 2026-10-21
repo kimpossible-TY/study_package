@@ -75,6 +75,7 @@ class VerificationService:
 
     def _verify_developer_auth(self) -> list[VerificationEntry]:
         entries: list[VerificationEntry] = []
+        entries.extend(self._developer_auth.powershell_profiles.verify())
         gh_accounts = self._developer_auth.github_cli_accounts()
         if gh_accounts is None:
             entries.append(VerificationEntry("GitHub CLI", "gh auth status", "manual verification required", "GitHub CLI is unavailable"))

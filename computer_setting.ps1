@@ -1,4 +1,4 @@
-
+﻿
 # ==============================================================================
 # Windows user-level development environment bootstrapper
 # ==============================================================================
@@ -25,9 +25,81 @@ $ExtraPackages = @(
     "powertoys"
 )
 
-# Keep the SSH shortcut in this PowerShell session without changing a profile.
+function Set-PersonalPowerShellProfile {
+    # A managed block lets the cleaner remove our settings without erasing an
+    # existing personal profile. Both editions use their own all-hosts profile.
+    $ProfileBlock = @'
+# BEGIN study_package PowerShell settings
 function global:mac {
-    ssh -o PubkeyAuthentication=no taeyoung@127.0.0.1
+    ssh -o PubkeyAuthentication=no taeyoung@127.0.0.1 @args
+}
+
+if ($Host.Name -ne 'Windows PowerShell ISE Host') {
+    try {
+        Import-Module PSReadLine -ErrorAction Stop
+        Set-PSReadLineOption -EditMode Windows -BellStyle None
+        Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
+        Set-PSReadLineKeyHandler -Key UpArrow -Function HistorySearchBackward
+        Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
+        $ReadLineOptions = Get-Command Set-PSReadLineOption
+        if ($ReadLineOptions.Parameters.ContainsKey('PredictionSource')) {
+            Set-PSReadLineOption -PredictionSource History
+        }
+        else {
+            Write-Warning 'History predictions need a newer PSReadLine. Close PowerShell and open it again after setup.'
+        }
+        if ($ReadLineOptions.Parameters.ContainsKey('PredictionViewStyle')) {
+            Set-PSReadLineOption -PredictionViewStyle InlineView
+        }
+    }
+    catch {
+        Write-Warning "PSReadLine setup failed: $_"
+    }
+    if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
+        try {
+            oh-my-posh init pwsh | Invoke-Expression
+        }
+        catch {
+            Write-Warning "oh-my-posh setup failed: $_"
+        }
+    }
+}
+# END study_package PowerShell settings
+'@
+
+    $DocumentsDir = [Environment]::GetFolderPath('MyDocuments')
+    if ([string]::IsNullOrWhiteSpace($DocumentsDir)) {
+        throw 'The current-user Documents folder could not be located.'
+    }
+    $ProfilePaths = @(
+        $PROFILE.CurrentUserAllHosts
+        (Join-Path $DocumentsDir 'WindowsPowerShell\profile.ps1')
+        (Join-Path $DocumentsDir 'PowerShell\profile.ps1')
+    ) | Select-Object -Unique
+    $Pattern = '(?ms)^# BEGIN study_package PowerShell settings\r?\n.*?^# END study_package PowerShell settings(?:\r?\n|$)'
+    foreach ($ProfilePath in $ProfilePaths) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $ProfilePath) -Force | Out-Null
+        $Existing = ''
+        if (Test-Path -LiteralPath $ProfilePath) {
+            $Existing = [IO.File]::ReadAllText($ProfilePath)
+        }
+        if ($Existing.Contains('# BEGIN study_package PowerShell settings') -or $Existing.Contains('# END study_package PowerShell settings')) {
+            if ([regex]::Matches($Existing, $Pattern).Count -ne 1 -or
+                [regex]::Matches($Existing, [regex]::Escape('# BEGIN study_package PowerShell settings')).Count -ne 1 -or
+                [regex]::Matches($Existing, [regex]::Escape('# END study_package PowerShell settings')).Count -ne 1) {
+                throw "Invalid managed profile block: $ProfilePath"
+            }
+            $Existing = [regex]::Replace($Existing, $Pattern, '')
+        }
+        if ($Existing.Length -gt 0 -and !$Existing.EndsWith("`n")) {
+            $Existing += [Environment]::NewLine
+        }
+        # BOM keeps existing non-ASCII content readable in Windows PowerShell 5.1.
+        [IO.File]::WriteAllText($ProfilePath, $Existing + $ProfileBlock + [Environment]::NewLine, (New-Object Text.UTF8Encoding($true)))
+        Write-Host "PowerShell profile configured: $ProfilePath" -ForegroundColor DarkGray
+    }
+    # Run in global scope even when setup is invoked via & or Invoke-Step.
+    . ([scriptblock]::Create($ProfileBlock))
 }
 
 function Test-Command {
@@ -225,6 +297,36 @@ Invoke-Step "Installing base Scoop packages..." {
     }
 }
 
+Invoke-Step "Installing PSReadLine history predictions..." {
+    $InstallReadLine = {
+        $ErrorActionPreference = 'Stop'
+        $ReadLine = Get-Module PSReadLine -ListAvailable |
+            Sort-Object Version -Descending | Select-Object -First 1
+        if (!$ReadLine -or $ReadLine.Version -lt [version]'2.1.0') {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            if (!(Get-PackageProvider NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+                Install-PackageProvider NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+            }
+            Install-Module PSReadLine -MinimumVersion 2.1.0 -Scope CurrentUser -Force -AllowClobber
+        }
+    }
+    # Each edition has a distinct CurrentUser module directory. Separate clean
+    # processes also avoid replacing PSReadLine binaries loaded by this shell.
+    foreach ($Shell in @('powershell.exe', 'pwsh.exe')) {
+        $ShellCommand = Get-Command $Shell -ErrorAction SilentlyContinue
+        if ($ShellCommand) {
+            & $ShellCommand.Source -NoProfile -NonInteractive -Command $InstallReadLine.ToString()
+            if ($LASTEXITCODE -ne 0) {
+                throw "PSReadLine installation failed in $Shell."
+            }
+        }
+    }
+}
+
+Invoke-Step "Configuring PowerShell completion, prompt, and mac shortcut..." {
+    Set-PersonalPowerShellProfile
+}
+
 Invoke-Step "Installing Microsoft Dev Tunnel CLI for the current user..." {
     Install-DevTunnel
 }
@@ -260,39 +362,23 @@ Invoke-Step "Preparing Neovim configuration folder..." {
     }
 }
 
-Invoke-Step "Installing Windows Local Auth Cleaner to Downloads via Scoop..." {
-    $Manifest = Join-Path $PSScriptRoot "windows_local_auth_cleaner\windows-local-auth-cleaner.json"
-    $DownloadsDir = Join-Path $env:USERPROFILE "Downloads"
-    if (!(Test-Path -LiteralPath $DownloadsDir)) {
-        New-Item -ItemType Directory -Path $DownloadsDir -Force | Out-Null
+Invoke-Step "Installing Windows Local Auth Cleaner v0.2.0 from GitHub Release..." {
+    $CleanerReleaseTag = 'v0.2.0'
+    $ReleaseBase = "https://github.com/kimpossible-TY/study_package/releases/download/$CleanerReleaseTag"
+    $InstallerPath = Join-Path ([IO.Path]::GetTempPath()) ("windows-auth-cleaner-install-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+    try {
+        Invoke-WebRequest -Uri "$ReleaseBase/install.ps1" -OutFile $InstallerPath -UseBasicParsing
+        & $InstallerPath -Tag $CleanerReleaseTag
     }
-    $DestinationExe = Join-Path $DownloadsDir "windows-local-auth-cleaner.exe"
-
-    if (Test-Command "scoop") {
-        if (Test-Path -LiteralPath $Manifest) {
-            scoop install $Manifest
+    finally {
+        if (Test-Path -LiteralPath $InstallerPath) {
+            Remove-Item -LiteralPath $InstallerPath -Force
         }
-        else {
-            scoop install "https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/windows-local-auth-cleaner.json"
-        }
-
-        # Ensure the binary is placed directly in the Downloads directory
-        $InstalledExe = Join-Path $env:USERPROFILE "scoop\apps\windows-local-auth-cleaner\current\windows-local-auth-cleaner.exe"
-        if (Test-Path -LiteralPath $InstalledExe) {
-            Copy-Item -LiteralPath $InstalledExe -Destination $DestinationExe -Force
-            Write-Host "Binary placed in Downloads directory: $DestinationExe" -ForegroundColor DarkGray
-        }
-    }
-    else {
-        Write-Host "Downloading binary directly to Downloads directory..." -ForegroundColor DarkGray
-        Invoke-RestMethod `
-            -Uri "https://github.com/kimpossible-TY/study_package/releases/latest/download/windows-local-auth-cleaner.exe" `
-            -OutFile $DestinationExe
-        Write-Host "Binary downloaded to Downloads directory: $DestinationExe" -ForegroundColor DarkGray
     }
 }
 
 Write-Host "`nPersonal Windows development environment configured successfully." -ForegroundColor Green
 Write-Host "Installed with Scoop in the current user account." -ForegroundColor Green
 Write-Host "PowerToys was installed from the Scoop extras bucket for 64-bit Windows." -ForegroundColor Green
-Write-Host "Mac SSH shortcut for this PowerShell session: mac (connect Dev Tunnel first)." -ForegroundColor Green
+Write-Host "PowerShell profiles saved for Windows PowerShell and PowerShell 7. Open a new shell to load all settings." -ForegroundColor Green
+Write-Host "Mac SSH shortcut: mac (connect Dev Tunnel first). Run wac before leaving to remove managed profile settings." -ForegroundColor Green

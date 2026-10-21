@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .models import AccountAuditEntry, ActionResult
+from .powershell import PowerShellProfileManager
 
 
 @dataclass(frozen=True)
@@ -247,6 +248,7 @@ class DeveloperAuthService:
         app_data: Path | None = None,
         code_commands: tuple[str, ...] = ("code", "code-insiders"),
         devtunnel_command: str | None = None,
+        powershell_profiles: PowerShellProfileManager | None = None,
     ) -> None:
         self._runner = runner or CommandRunner()
         self._credential_store = credential_store or WindowsCredentialStore()
@@ -255,6 +257,7 @@ class DeveloperAuthService:
         self._app_data = app_data if app_data is not None else (Path(app_data_value) if app_data_value else None)
         self._code_commands = code_commands
         self._devtunnel_command = devtunnel_command or self._find_devtunnel_command()
+        self.powershell_profiles = powershell_profiles or PowerShellProfileManager()
 
     def audit(self) -> list[AccountAuditEntry]:
         """Return a complete best-effort audit; one unavailable tool never hides others."""
@@ -266,6 +269,7 @@ class DeveloperAuthService:
         entries.extend(self._audit_devtunnel())
         entries.extend(self._audit_credentials())
         entries.extend(self._audit_environment())
+        entries.extend(self.powershell_profiles.audit())
         return entries
 
     def github_cli_accounts(self) -> list[str] | None:
@@ -355,6 +359,7 @@ class DeveloperAuthService:
         results.extend(self._remove_devtunnel(apply_changes, confirm))
         results.extend(self._remove_credentials(apply_changes, confirm))
         results.extend(self._remove_environment(apply_changes, confirm))
+        results.extend(self.powershell_profiles.remove(apply_changes, confirm))
         return results
 
     def _audit_github_cli(self) -> list[AccountAuditEntry]:

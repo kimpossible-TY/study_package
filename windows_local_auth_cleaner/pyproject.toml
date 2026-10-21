@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "windows-local-auth-cleaner"
-version = "0.1.0"
+version = "0.2.0"
 description = "A safe Textual TUI and CLI for reviewing local Windows browser and developer-authentication data."
 readme = "README.md"
 requires-python = ">=3.10"

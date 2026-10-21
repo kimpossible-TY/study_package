@@ -4,21 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag to create/update (e.g. v0.1.0 or latest)"
-        required: false
-        default: "latest"
+        description: "Release tag matching the package version (e.g. v0.2.0)"
+        required: true
+        default: "v0.2.0"
         type: string
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
-      - "windows-local-auth-cleaner-v*"
-  release:
-    types: [published]
+    branches: [main]
+    tags: ["v*", "windows-local-auth-cleaner-v*"]
 
 permissions:
   contents: write
+
+concurrency:
+  group: windows-cleaner-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows-executable:
@@ -26,6 +25,7 @@ jobs:
     defaults:
       run:
         working-directory: windows_local_auth_cleaner
+        shell: pwsh
 
     steps:
       - name: Check out source
@@ -43,6 +43,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install . pyinstaller
 
+      - name: Test Python services and CLI
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Service tests failed.' }
+          python -m unittest discover -s test -v
+          if ($LASTEXITCODE -ne 0) { throw 'CLI tests failed.' }
+
+      - name: Test profiles and installer in both PowerShell editions
+        run: |
+          foreach ($shell in @('powershell.exe', 'pwsh.exe')) {
+            & $shell -NoProfile -NonInteractive -File ../tests/test_computer_setting_profile.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Profile tests failed in $shell." }
+            & $shell -NoProfile -NonInteractive -File ../tests/test_cleaner_install.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Installer tests failed in $shell." }
+          }
+
       - name: Build terminal executable
         run: >-
           pyinstaller --noconfirm --clean --onefile
@@ -51,35 +67,65 @@ jobs:
           --hidden-import browser_cleaner.textual_app
           main.py
 
-      - name: Upload executable artifact
+      - name: Smoke test executable and prepare release assets
+        id: assets
+        env:
+          REQUESTED_TAG: ${{ inputs.tag_name }}
+        run: |
+          & ./dist/windows-local-auth-cleaner.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged executable failed.' }
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
+          $tag = "v$version"
+          if ($env:REQUESTED_TAG -and $env:REQUESTED_TAG -ne $tag) { throw 'Release tag must match package version.' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne $tag) { throw 'Git tag must match package version.' }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          $hash = (Get-FileHash ./dist/windows-local-auth-cleaner.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  windows-local-auth-cleaner.exe" | Set-Content ./dist/windows-local-auth-cleaner.exe.sha256 -Encoding ascii
+          Copy-Item ./install.ps1 ./dist/install.ps1
+          $manifest = Get-Content ./windows-local-auth-cleaner.json -Raw | ConvertFrom-Json
+          $manifest.version = $version
+          $manifest.architecture.'64bit'.url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/windows-local-auth-cleaner.exe"
+          $manifest.architecture.'64bit' | Add-Member -NotePropertyName hash -NotePropertyValue $hash -Force
+          $manifest | ConvertTo-Json -Depth 20 | Set-Content ./dist/windows-local-auth-cleaner.json -Encoding utf8
+
+      - name: Upload executable and installation assets
         uses: actions/upload-artifact@v4
         with:
           name: windows-local-auth-cleaner
-          path: windows_local_auth_cleaner/dist/windows-local-auth-cleaner.exe
+          path: |
+            windows_local_auth_cleaner/dist/windows-local-auth-cleaner.exe
+            windows_local_auth_cleaner/dist/windows-local-auth-cleaner.exe.sha256
+            windows_local_auth_cleaner/dist/windows-local-auth-cleaner.json
+            windows_local_auth_cleaner/dist/install.ps1
           if-no-files-found: error
 
       - name: Publish to GitHub Release
-        shell: pwsh
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.assets.outputs.tag }}
         run: |
-          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.tag_name }}') {
-            '${{ inputs.tag_name }}'
-          } elseif ('${{ github.ref_type }}' -eq 'tag') {
-            '${{ github.ref_name }}'
-          } elseif ('${{ github.event.release.tag_name }}') {
-            '${{ github.event.release.tag_name }}'
-          } else {
-            'v0.1.0'
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --title "Windows Local Auth Cleaner $env:RELEASE_TAG" --generate-notes --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create release.' }
           }
+          gh release upload $env:RELEASE_TAG ./dist/windows-local-auth-cleaner.exe ./dist/windows-local-auth-cleaner.exe.sha256 ./dist/windows-local-auth-cleaner.json ./dist/install.ps1 --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Could not upload release assets.' }
+          gh release edit $env:RELEASE_TAG --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not mark latest release.' }
 
-          if (-not $tag) { $tag = 'v0.1.0' }
-
-          $exists = gh release view $tag 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Updating existing release $tag with binary..."
-            gh release upload $tag "dist/windows-local-auth-cleaner.exe" --clobber
-          } else {
-            Write-Host "Creating new release $tag and uploading binary..."
-            gh release create $tag "dist/windows-local-auth-cleaner.exe" --title "Windows Local Auth Cleaner $tag" --generate-notes
-          }
+      - name: Verify installation from published release
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ steps.assets.outputs.tag }}
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'cleaner-release-install'
+          & ./install.ps1 -Tag $env:RELEASE_TAG -InstallDir $installDir
+          $installed = Join-Path $installDir 'windows-local-auth-cleaner.exe'
+          if ((Get-FileHash $installed).Hash -ne (Get-FileHash ./dist/windows-local-auth-cleaner.exe).Hash) { throw 'Installed release differs from built executable.' }
+          if ((Get-Command wac).Source -ne (Join-Path $installDir 'wac.cmd')) { throw 'wac resolves to a stale installation.' }
+          & wac --help
+          if ($LASTEXITCODE -ne 0) { throw 'Installed wac failed.' }
+          & ./install.ps1 -Tag $env:RELEASE_TAG -InstallDir $installDir
+          if ((Get-FileHash $installed).Hash -ne (Get-FileHash ./dist/windows-local-auth-cleaner.exe).Hash) { throw 'Reinstallation failed.' }

@@ -15,15 +15,16 @@ irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_
 ```
 
 This installer:
-- Downloads the latest standalone `windows-local-auth-cleaner.exe` directly from the GitHub Release.
+- Downloads the latest standalone `windows-local-auth-cleaner.exe` directly from the GitHub Release and verifies its published SHA-256 before replacing an existing installation.
+- Copies the verified executable to `$env:USERPROFILE\Downloads`.
 - Installs it into `$env:LOCALAPPDATA\Programs\windows-local-auth-cleaner`.
 - Creates the `wac` command alias.
-- Configures your user `PATH` (and Scoop shims if present) so `windows-local-auth-cleaner` and `wac` can be invoked immediately from any terminal.
+- Places the installation directory first in your user/session `PATH` so `windows-local-auth-cleaner` and `wac` can be invoked immediately from any terminal.
 
 To install a specific version or uninstall:
 ```powershell
 # Specific tag:
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Tag "v0.1.0"
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Tag "v0.2.0"
 
 # Uninstall:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Uninstall
@@ -34,7 +35,7 @@ To install a specific version or uninstall:
 If you use [Scoop](https://scoop.sh), install directly using the Scoop manifest:
 
 ```powershell
-scoop install https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/windows-local-auth-cleaner.json
+scoop install https://github.com/kimpossible-TY/study_package/releases/latest/download/windows-local-auth-cleaner.json
 ```
 
 Scoop downloads the binary from GitHub Releases and shims both `windows-local-auth-cleaner` and `wac` into your PATH.
@@ -189,6 +190,21 @@ python .\main.py --wipe-vscode-profile --apply
 
 It can remove VS Code settings, keybindings, snippets, workspace state, extension state, and local chat/session data. This local data is not recoverable through the tool.
 
+## PowerShell bootstrap settings
+
+Default cleanup (`wac`) and `--category developer-auth` also remove the managed
+PowerShell settings created by `computer_setting.ps1`: the global `mac` SSH
+shortcut, PSReadLine completion/history settings, and oh-my-posh initialization.
+Both Windows PowerShell and PowerShell 7 current-user all-hosts profiles are
+checked under the Windows Documents folder, including redirected Documents.
+`--dry-run` previews these changes and `--verify` checks for remaining blocks.
+
+Only the marked `study_package PowerShell settings` block is removed. Other
+profile content is preserved; a profile containing only that block is deleted.
+Malformed blocks and paths involving symlinks or junctions are left unchanged and
+reported. Close all existing PowerShell sessions afterward to unload functions
+and prompt state already in memory. This feature is included in v0.2.0 and later. Re-run the installer to update older executables.
+
 ## Browser full profiles
 
 Never partially edit browser private state files to force sync-account logout. If necessary, request one exact discovered profile under a supported current-user root:
@@ -227,3 +243,13 @@ The most certain local-device cleanup is removing the old Windows user profile, 
 - `developer_auth.py`: supported CLI/API audit and logout/removal
 - `vscode.py`: safe backup and explicit profile wipe
 - `verification.py`: non-destructive local verification
+
+## Release validation
+
+The Windows Actions workflow runs Python tests, profile/installer fixture tests in
+Windows PowerShell 5.1 and PowerShell 7, and a packaged `--help` smoke test. Manual
+release runs publish the executable, `.exe.sha256`, `install.ps1`, and a Scoop
+manifest containing the executable hash under the package's version tag. The
+workflow then installs from that public release, checks `wac` resolution, and
+reinstalls it to verify updates. Pushes to `main` validate and upload build
+artifacts; they do not silently replace an existing versioned release.
