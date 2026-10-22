@@ -108,6 +108,38 @@ function Test-Command {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Test-WindowsTerminalVersion {
+    # SIXEL image support used by FlowReader starts with Windows Terminal 1.22.
+    # Check both channels so a newer Preview does not hide an outdated stable app.
+    $MinimumVersion = [version]'1.22.0.0'
+    try {
+        $Terminals = @(Get-AppxPackage -Name 'Microsoft.WindowsTerminal*' -ErrorAction Stop |
+            Where-Object { $_.Name -in @('Microsoft.WindowsTerminal', 'Microsoft.WindowsTerminalPreview') })
+        if ($Terminals.Count -eq 0) {
+            Write-Warning 'Windows Terminal was not found. Install Windows Terminal 1.22 or newer from Microsoft Store to use FlowReader.'
+            return
+        }
+        foreach ($Terminal in $Terminals) {
+            $InstalledVersion = [version]$Terminal.Version
+            Write-Host "$($Terminal.Name) version: $InstalledVersion" -ForegroundColor DarkGray
+            if ($InstalledVersion -lt $MinimumVersion) {
+                $PackageId = 'Microsoft.WindowsTerminal'
+                if ($Terminal.Name -eq 'Microsoft.WindowsTerminalPreview') {
+                    $PackageId = 'Microsoft.WindowsTerminal.Preview'
+                }
+                Write-Warning "Please update $($Terminal.Name) to version 1.22 or newer. FlowReader requires SIXEL image support."
+                Write-Warning 'If you do not update, you will not be able to use some features, including FlowReader.'
+                Write-Host "Update in Microsoft Store, or run: winget upgrade --id $PackageId --exact" -ForegroundColor Yellow
+                Write-Host 'After updating, close all Windows Terminal windows and reopen Windows Terminal before using FlowReader.' -ForegroundColor Yellow
+            }
+        }
+    }
+    catch {
+        Write-Warning "Windows Terminal version could not be checked: $_"
+        Write-Warning 'Check Settings > About in Windows Terminal and update to version 1.22 or newer to use FlowReader.'
+    }
+}
+
 function Update-ProcessPath {
     $PathParts = @(
         [Environment]::GetEnvironmentVariable("Path", "Machine"),
@@ -251,6 +283,10 @@ function Install-DevTunnel {
 }
 
 Write-Host "`nPreparing personal Windows development environment..." -ForegroundColor Cyan
+
+Invoke-Step "Checking Windows Terminal version for FlowReader..." {
+    Test-WindowsTerminalVersion
+}
 
 Update-ProcessPath
 
