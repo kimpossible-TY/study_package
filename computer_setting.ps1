@@ -30,6 +30,17 @@ function Set-PersonalPowerShellProfile {
     # existing personal profile. Both editions use their own all-hosts profile.
     $ProfileBlock = @'
 # BEGIN study_package PowerShell settings
+$PersonalPaths = @(
+    (Join-Path $env:USERPROFILE 'scoop\shims'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\devtunnel'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\windows-local-auth-cleaner')
+)
+foreach ($Path in $PersonalPaths) {
+    if ((Test-Path -LiteralPath $Path) -and ($env:Path -split [IO.Path]::PathSeparator -notcontains $Path)) {
+        $env:Path = "$Path$([IO.Path]::PathSeparator)$env:Path"
+    }
+}
+
 function global:mac {
     ssh -o PubkeyAuthentication=no taeyoung@127.0.0.1 @args
 }
@@ -145,7 +156,8 @@ function Update-ProcessPath {
         [Environment]::GetEnvironmentVariable("Path", "Machine"),
         [Environment]::GetEnvironmentVariable("Path", "User"),
         (Join-Path $env:USERPROFILE "scoop\shims"),
-        (Join-Path $env:LOCALAPPDATA "Programs\devtunnel")
+        (Join-Path $env:LOCALAPPDATA "Programs\devtunnel"),
+        (Join-Path $env:LOCALAPPDATA "Programs\windows-local-auth-cleaner")
     )
 
     $env:Path = ($PathParts | Where-Object { $_ }) -join [IO.Path]::PathSeparator
