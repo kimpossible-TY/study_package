@@ -166,7 +166,10 @@ bool RfbDecoder::ResetSession(uint32_t width,
     std::memset(&zlib_stream_, 0, sizeof(zlib_stream_));
 
     fb_mutex_ = fb_mutex;
-    SetPixelFormat(initial_format);
+    has_prev_format_ = false;
+    prev_format_grace_rects_ = 0;
+    format_ = initial_format;
+    UpdateFormatMetadata();
 
     OptionalLockGuard guard(fb_mutex_);
     width_ = width;
@@ -180,6 +183,14 @@ bool RfbDecoder::ResetSession(uint32_t width,
 }
 
 void RfbDecoder::SetPixelFormat(const RfbPixelFormat& fmt) noexcept {
+    if (fmt.bits_per_pixel != format_.bits_per_pixel ||
+        fmt.depth != format_.depth ||
+        fmt.big_endian_flag != format_.big_endian_flag ||
+        fmt.true_colour_flag != format_.true_colour_flag) {
+        prev_format_ = format_;
+        has_prev_format_ = true;
+        prev_format_grace_rects_ = 64u;
+    }
     format_ = fmt;
     UpdateFormatMetadata();
 }
@@ -605,30 +616,10 @@ bool RfbDecoder::DecodeZlibRect(uint16_t x,
     return true;
 }
 
-bool RfbDecoder::DecodeZrleRect(uint16_t x,
-                                uint16_t y,
-                                uint16_t w,
-                                uint16_t h,
-                                const ByteReadFn& reader,
-                                std::string* error_out) {
-    uint8_t len_hdr[4];
-    if (!reader(len_hdr, 4, error_out)) return false;
-    uint32_t comp_len = ReadBE32(len_hdr);
-    if (comp_len > kMaxCompressedRectBytes) {
-        if (error_out) *error_out = "ZRLE compressed length exceeds 64 MB safety limit";
-        return false;
-    }
-
-    net_scratch_.resize(comp_len);
-    if (comp_len > 0 && !reader(net_scratch_.data(), comp_len, error_out)) {
-        return false;
-    }
-    if (!InflatePacket(&zrle_stream_, &zrle_initialized_,
-                       net_scratch_.data(), comp_len, &inflate_scratch_, error_out)) {
-        return false;
-    }
-    if (w == 0 || h == 0) return true;
-
+bool RfbDecoder::DecodeZrleTilesBuffer(uint16_t w,
+                                       uint16_t h,
+                                       bool require_exact_end,
+                                       std::string* error_out) {
     stage_bgra32_.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
 
     const uint8_t* cur = inflate_scratch_.data();
@@ -821,6 +812,78 @@ bool RfbDecoder::DecodeZrleRect(uint16_t x,
                 return false;
             }
         }
+    }
+
+    if (require_exact_end && cur != end) {
+        if (error_out) {
+            *error_out = "Trailing bytes in ZRLE rectangle (" +
+                         std::to_string(static_cast<size_t>(end - cur)) + " bytes left)";
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool RfbDecoder::DecodeZrleRect(uint16_t x,
+                                uint16_t y,
+                                uint16_t w,
+                                uint16_t h,
+                                const ByteReadFn& reader,
+                                std::string* error_out) {
+    uint8_t len_hdr[4];
+    if (!reader(len_hdr, 4, error_out)) return false;
+    uint32_t comp_len = ReadBE32(len_hdr);
+    if (comp_len > kMaxCompressedRectBytes) {
+        if (error_out) *error_out = "ZRLE compressed length exceeds 64 MB safety limit";
+        return false;
+    }
+
+    net_scratch_.resize(comp_len);
+    if (comp_len > 0 && !reader(net_scratch_.data(), comp_len, error_out)) {
+        return false;
+    }
+    if (!InflatePacket(&zrle_stream_, &zrle_initialized_,
+                       net_scratch_.data(), comp_len, &inflate_scratch_, error_out)) {
+        return false;
+    }
+    if (w == 0 || h == 0) return true;
+
+    if (has_prev_format_ && prev_format_grace_rects_ > 0u) {
+        std::string primary_err;
+        if (DecodeZrleTilesBuffer(w, h, true, &primary_err)) {
+            has_prev_format_ = false;
+            prev_format_grace_rects_ = 0u;
+            BlitStageToFramebuffer(x, y, w, h);
+            return true;
+        }
+
+        // macOS screensharingd may flush an already-queued frame encoded in the previous
+        // pixel format right across a SetPixelFormat boundary. Retry the already-inflated
+        // buffer with prev_format_ without disturbing the stateful zlib stream.
+        const RfbPixelFormat saved_format = format_;
+        format_ = prev_format_;
+        UpdateFormatMetadata();
+        std::string fallback_err;
+        const bool fallback_ok = DecodeZrleTilesBuffer(w, h, true, &fallback_err);
+        format_ = saved_format;
+        UpdateFormatMetadata();
+
+        if (fallback_ok) {
+            --prev_format_grace_rects_;
+            if (prev_format_grace_rects_ == 0u) {
+                has_prev_format_ = false;
+            }
+            BlitStageToFramebuffer(x, y, w, h);
+            return true;
+        }
+
+        if (error_out) *error_out = primary_err;
+        return false;
+    }
+
+    if (!DecodeZrleTilesBuffer(w, h, false, error_out)) {
+        return false;
     }
 
     BlitStageToFramebuffer(x, y, w, h);

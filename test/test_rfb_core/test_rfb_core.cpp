@@ -496,6 +496,45 @@ void TestDecodersAndCursor() {
     CHECK_EQ(cur.pixels_bgra[4 + 3], 0x00u);  // pixel (1,0) transparent
     CHECK_EQ(cur.pixels_bgra[idx_8_1 + 2], 0xDEu);
     CHECK_EQ(cur.pixels_bgra[idx_8_1 + 3], 0xFFu);
+
+    // Regression: stale 16bpp RGB565 ZRLE raw tile arriving right after SetPixelFormat(32bpp)
+    // must NOT fail with "Truncated ZRLE raw tile" — decoder falls back to prev_format_ gracefully.
+    {
+        RfbDecoder tdec;
+        CHECK_TRUE(tdec.ResetSession(4, 4, RfbPixelFormat::Rgb565()));
+        tdec.SetPixelFormat(RfbPixelFormat::Bgrx8888());
+
+        mz_stream zt{};
+        CHECK_EQ(mz_deflateInit(&zt, MZ_DEFAULT_COMPRESSION), MZ_OK);
+
+        // 4x4 raw tile in 16bpp RGB565 (1 + 16*2 = 33 bytes, whereas 32bpp CPIXEL expects 1 + 16*3 = 49 bytes)
+        std::vector<uint8_t> stale_tile;
+        stale_tile.push_back(0u);  // raw subencoding
+        for (int i = 0; i < 16; ++i) {
+            stale_tile.push_back(0x00u);
+            stale_tile.push_back(0xF8u);  // pure red in RGB565 LE (0xF800)
+        }
+        auto pkt_stale = DeflateSyncFlush(&zt, stale_tile);
+        MemoryByteReader r_stale(pkt_stale);
+        CHECK_TRUE(tdec.DecodeRectangle(0, 0, 4, 4, rfb_encoding::kZRLE, r_stale.Fn(), &out1, nullptr, &err));
+        CHECK_EQ(tdec.PixelsBgra()[2], 0xFFu);  // Red channel decoded accurately from 16bpp stale frame
+
+        // Subsequent 32bpp CPIXEL raw tile decodes in the new 32bpp format and clears grace window
+        std::vector<uint8_t> fresh_tile;
+        fresh_tile.push_back(0u);
+        for (int i = 0; i < 16; ++i) {
+            fresh_tile.push_back(0xCCu);  // B
+            fresh_tile.push_back(0xBBu);  // G
+            fresh_tile.push_back(0xAAu);  // R
+        }
+        auto pkt_fresh = DeflateSyncFlush(&zt, fresh_tile);
+        mz_deflateEnd(&zt);
+        MemoryByteReader r_fresh(pkt_fresh);
+        CHECK_TRUE(tdec.DecodeRectangle(0, 0, 4, 4, rfb_encoding::kZRLE, r_fresh.Fn(), &out1, nullptr, &err));
+        CHECK_EQ(tdec.PixelsBgra()[0], 0xCCu);
+        CHECK_EQ(tdec.PixelsBgra()[1], 0xBBu);
+        CHECK_EQ(tdec.PixelsBgra()[2], 0xAAu);
+    }
 }
 
 // ============================================================================
@@ -520,11 +559,10 @@ void TestAdaptiveQualityTransitions() {
     CHECK_TRUE(!p3.has_value());
     CHECK_TRUE(ctrl.HasPendingPointer());
 
-    // Rapid pointer burst (3 moves within 50ms) -> switches to 16bpp RGB565!
-    auto d_burst = ctrl.PeekDecision(t0 + std::chrono::milliseconds(4), 32);
-    CHECK_EQ(d_burst.target_bpp, 16);
-    CHECK_TRUE(d_burst.format_changed);
-    ctrl.CommitAppliedFormat(16, false);
+    // Pure hover moves (button_mask == 0) stay 32bpp so SetPixelFormat doesn't churn on cursor hover
+    auto d_hover = ctrl.PeekDecision(t0 + std::chrono::milliseconds(4), 32);
+    CHECK_EQ(d_hover.target_bpp, 32);
+    CHECK_TRUE(!d_hover.format_changed);
 
     // At +6ms, FlushPendingPointer emits the latest coalesced coordinate (140, 120)
     auto flushed = ctrl.FlushPendingPointer(t0 + std::chrono::milliseconds(6));
@@ -537,12 +575,20 @@ void TestAdaptiveQualityTransitions() {
     CHECK_TRUE(click.has_value());
     CHECK_EQ(click->button_mask, rfb_button::kLeft);
 
-    // At +240ms after last burst activity (t0 + 7ms + 240ms = t0 + 247ms): still 16bpp
-    auto d_hold = ctrl.PeekDecision(t0 + std::chrono::milliseconds(247), 16);
+    // Active drag movement (button_mask != 0) switches to 16bpp RGB565!
+    auto drag = ctrl.OnPointerInput(t0 + std::chrono::milliseconds(14), 180, 150, rfb_button::kLeft);
+    CHECK_TRUE(drag.has_value());
+    auto d_burst = ctrl.PeekDecision(t0 + std::chrono::milliseconds(14), 32);
+    CHECK_EQ(d_burst.target_bpp, 16);
+    CHECK_TRUE(d_burst.format_changed);
+    ctrl.CommitAppliedFormat(16, false);
+
+    // At +240ms after last burst activity (t0 + 14ms + 240ms = t0 + 254ms): still 16bpp
+    auto d_hold = ctrl.PeekDecision(t0 + std::chrono::milliseconds(254), 16);
     CHECK_EQ(d_hold.target_bpp, 16);
 
-    // At >= 250ms idle (t0 + 7ms + 251ms = t0 + 258ms): switches back to 32bpp + full refresh!
-    auto d_sharp = ctrl.PeekDecision(t0 + std::chrono::milliseconds(258), 16);
+    // At >= 250ms idle (t0 + 14ms + 251ms = t0 + 265ms): switches back to 32bpp + full refresh!
+    auto d_sharp = ctrl.PeekDecision(t0 + std::chrono::milliseconds(265), 16);
     CHECK_EQ(d_sharp.target_bpp, 32);
     CHECK_TRUE(d_sharp.format_changed);
     CHECK_TRUE(d_sharp.request_full_refresh);

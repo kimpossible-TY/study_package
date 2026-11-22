@@ -702,7 +702,6 @@ private:
         uint16_t cur_w = init_w;
         uint16_t cur_h = init_h;
         bool fbur_in_flight = false;
-        bool nudge_in_flight = false;
 
         if (!SendWireFramebufferUpdateRequest(false, 0, 0, cur_w, cur_h, &err)) {
             ReportError("Failed sending initial FramebufferUpdateRequest: " + err, false);
@@ -760,20 +759,11 @@ private:
                     return;
                 }
                 fbur_in_flight = true;
-                nudge_in_flight = false;
                 {
                     std::lock_guard<std::mutex> lock(ctrl_mutex_);
                     adaptive_.CommitAppliedFormat(current_bpp, !incremental);
                     adaptive_.OnUpdateRequestSent(AdaptiveQualityController::Clock::now(), false);
                 }
-            } else if ((decision.format_changed || decision.request_full_refresh) && !nudge_in_flight) {
-                // Flush the pending incremental request on a static desktop using a 1x1
-                // non-incremental request in the CURRENT pixel format so we can safely switch bpp!
-                if (!SendWireFramebufferUpdateRequest(false, 0, 0, 1, 1, &err)) {
-                    ReportError("Connection lost sending refresh nudge: " + err, false);
-                    return;
-                }
-                nudge_in_flight = true;
             }
 
             int poll_ms = has_pending_ptr ? 4 : 20;
@@ -843,13 +833,9 @@ private:
                     }
                 }
 
-                bool was_pure_nudge = nudge_in_flight && frame_rects.size() == 1 &&
-                                      frame_rects[0].x == 0 && frame_rects[0].y == 0 &&
-                                      frame_rects[0].w == 1 && frame_rects[0].h == 1 && !frame_resized;
                 fbur_in_flight = false;
-                nudge_in_flight = false;
 
-                if (!was_pure_nudge) {
+                {
                     std::lock_guard<std::mutex> qlock(ctrl_mutex_);
                     adaptive_.OnUpdateCompleted(AdaptiveQualityController::Clock::now());
                 }

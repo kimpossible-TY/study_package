@@ -456,13 +456,28 @@ function Install-MacMirrorViewer {
         }
     }
 
-    if (Test-PeExecutable -Path $Executable -MinBytes 262144) {
-        Add-UserPathEntry -Directory $InstallDir
-        Write-Host "Mac Mirror Viewer is already installed: $Executable" -ForegroundColor DarkGray
-        return $true
+    Enable-Tls12
+    $ExpectedSha256 = $null
+    try {
+        $ShaText = (Invoke-RestMethod -Uri "$MacMirrorViewerUrl.sha256" -UseBasicParsing)
+        if ($ShaText -match '([0-9a-fA-F]{64})') {
+            $ExpectedSha256 = $Matches[1].ToLowerInvariant()
+        }
+    }
+    catch {
+        $ExpectedSha256 = $null
     }
 
-    Enable-Tls12
+    if (Test-PeExecutable -Path $Executable -MinBytes 262144) {
+        $LocalSha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($ExpectedSha256) -or $LocalSha256 -eq $ExpectedSha256) {
+            Add-UserPathEntry -Directory $InstallDir
+            Write-Host "Mac Mirror Viewer is already up to date: $Executable" -ForegroundColor DarkGray
+            return $true
+        }
+        Write-Host "Updating Mac Mirror Viewer to latest release..." -ForegroundColor Cyan
+    }
+
     $DownloadPath = Join-Path $InstallDir ("mac-mirror-viewer-{0}.exe" -f [Guid]::NewGuid().ToString("N"))
     try {
         Invoke-WebRequest `

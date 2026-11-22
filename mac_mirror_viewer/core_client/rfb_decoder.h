@@ -130,6 +130,8 @@ private:
                            const ByteReadFn& reader, std::string* error_out);
     bool DecodeZlibRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                         const ByteReadFn& reader, std::string* error_out);
+    bool DecodeZrleTilesBuffer(uint16_t w, uint16_t h, bool require_exact_end,
+                               std::string* error_out);
     bool DecodeZrleRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                         const ByteReadFn& reader, std::string* error_out);
     bool DecodeRichCursor(uint16_t hotspot_x, uint16_t hotspot_y, uint16_t w, uint16_t h,
@@ -144,6 +146,9 @@ private:
     std::vector<uint8_t> fb_bgra_;
 
     RfbPixelFormat format_{};
+    RfbPixelFormat prev_format_{};
+    bool has_prev_format_ = false;
+    uint32_t prev_format_grace_rects_ = 0;
     uint8_t bytes_per_pixel_ = 4;
     uint8_t bytes_per_cpixel_ = 3;
     CpixelMode cpixel_mode_ = CpixelMode::FastBgrLs3;

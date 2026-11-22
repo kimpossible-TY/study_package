@@ -50,10 +50,10 @@ std::optional<PointerSample> AdaptiveQualityController::OnPointerInput(TimePoint
         }
         recent_move_times_.push_back(now);
 
-        // Enter/extend 16-bit burst on drag, rapid pointer burst, or ongoing burst motion
-        if (button_mask != 0 ||
-            recent_move_times_.size() >= kRapidMoveThreshold ||
-            IsBurstActive(now)) {
+        // Enter/extend 16-bit burst on active drag (button pressed) or ongoing burst motion.
+        // Pure hover moves do not churn SetPixelFormat on macOS screensharingd since the
+        // local vector cursor already tracks at native 60/120Hz with zero network latency.
+        if (button_mask != 0 || IsBurstActive(now)) {
             burst_initialized_ = true;
             last_burst_time_ = now;
         }
