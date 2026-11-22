@@ -53,7 +53,7 @@ class PowerShellProfileManager:
     def audit(self) -> list[AccountAuditEntry]:
         entries = []
         for result in self.remove(False, lambda *_: False):
-            entries.append(AccountAuditEntry("PowerShell profile", "study_package settings / mac", result.location,
+            entries.append(AccountAuditEntry("PowerShell profile", "study_package settings / mac, mac-mirror", result.location,
                                              "present" if result.status == "dry-run" else "unknown", "yes", "no"))
         return entries
 
@@ -68,7 +68,7 @@ class PowerShellProfileManager:
                 if content.count(self.begin) != 1 or content.count(self.end) != 1 or not self.pattern.search(content):
                     raise ValueError("invalid managed block; profile left unchanged")
                 if not apply:
-                    status, details = "dry-run", "would remove study_package settings and mac; preserve other profile content"
+                    status, details = "dry-run", "would remove study_package settings, mac, and mac-mirror; preserve other profile content"
                 elif not confirm(f"study_package settings in '{path}'", f"REMOVE POWERSHELL SETTINGS {path}"):
                     status, details = "manual", "confirmation declined"
                 else:
@@ -83,7 +83,7 @@ class PowerShellProfileManager:
             except (OSError, UnicodeError, ValueError):
                 # Never display profile contents or decoding exception payloads.
                 details = "could not safely read or edit managed profile; profile left unchanged"
-            results.append(ActionResult("PowerShell profile", "study_package settings / mac", str(path), "developer-auth", status, details))
+            results.append(ActionResult("PowerShell profile", "study_package settings / mac, mac-mirror", str(path), "developer-auth", status, details))
         return results
 
     def verify(self) -> list[VerificationEntry]:

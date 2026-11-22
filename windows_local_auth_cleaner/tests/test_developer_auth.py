@@ -6,11 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from browser_cleaner.config import BrowserCatalog
-from browser_cleaner.developer_auth import CommandResult, CredentialEntry, DeveloperAuthService
-from browser_cleaner.models import CleanerOptions
-from browser_cleaner.profiles import ProfileFinder
-from browser_cleaner.verification import VerificationService
+from local_auth_cleaner.config import BrowserCatalog
+from local_auth_cleaner.developer_auth import CommandResult, CredentialEntry, DeveloperAuthService
+from local_auth_cleaner.models import CleanerOptions
+from local_auth_cleaner.profiles import ProfileFinder
+from local_auth_cleaner.verification import VerificationService
 
 
 class FakeRunner:
@@ -68,7 +68,7 @@ class FakeEnvironmentStore:
 
 class DeveloperAuthTests(unittest.TestCase):
     def setUp(self) -> None:
-        documents = patch("browser_cleaner.powershell.PowerShellProfileManager._find_documents", return_value=None)
+        documents = patch("local_auth_cleaner.powershell.PowerShellProfileManager._find_documents", return_value=None)
         documents.start()
         self.addCleanup(documents.stop)
         self.runner = FakeRunner()
@@ -184,7 +184,7 @@ class DevTunnelRunner(FakeRunner):
 
 class DevTunnelAuthTests(unittest.TestCase):
     def setUp(self) -> None:
-        documents = patch("browser_cleaner.powershell.PowerShellProfileManager._find_documents", return_value=None)
+        documents = patch("local_auth_cleaner.powershell.PowerShellProfileManager._find_documents", return_value=None)
         documents.start()
         self.addCleanup(documents.stop)
 
@@ -274,7 +274,7 @@ class DevTunnelAuthTests(unittest.TestCase):
             executable = Path(directory) / "Programs" / "devtunnel" / "devtunnel.exe"
             executable.parent.mkdir(parents=True)
             executable.touch()
-            with patch.dict(os.environ, {"LOCALAPPDATA": directory}), patch("browser_cleaner.developer_auth.shutil.which", return_value=None):
+            with patch.dict(os.environ, {"LOCALAPPDATA": directory}), patch("local_auth_cleaner.developer_auth.shutil.which", return_value=None):
                 service = DeveloperAuthService(runner=FakeRunner())
             self.assertEqual(service.devtunnel_command, str(executable))
 
@@ -291,6 +291,85 @@ class DevTunnelAuthTests(unittest.TestCase):
         self.assertEqual(next(result for result in results if result.provider == "Microsoft Dev Tunnels").status, "error")
         self.assertTrue(any(result.status == "removed" for result in results))
         self.assertNotIn("fixture-secret-value", str(results))
+
+
+class TailscaleMacMirrorCleanupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        documents = patch("local_auth_cleaner.powershell.PowerShellProfileManager._find_documents", return_value=None)
+        documents.start()
+        self.addCleanup(documents.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.ts_state_dir = self.root / ".tailscale"
+        self.ts_state_dir.mkdir()
+        self.mirror_dir = self.root / "mac-mirror"
+        self.mirror_dir.mkdir()
+
+    def test_audit_dry_run_logout_and_verification(self) -> None:
+        (self.ts_state_dir / "tailscaled.state").write_text("state-secret", encoding="utf-8")
+        (self.ts_state_dir / "tailscaled.pid").write_text("4321\n", encoding="utf-8")
+        (self.ts_state_dir / "mac-mirror-viewer.pid").write_text("5432\n", encoding="utf-8")
+        (self.mirror_dir / "ui-prefs.json").write_text('{"cursor_scale": 1.8}\n', encoding="utf-8")
+
+        class TailscaleRunner(FakeRunner):
+            def __init__(self) -> None:
+                super().__init__()
+                self.logged_out = False
+
+            def run(self, command):
+                self.commands.append(command)
+                if command[0] == "tailscale" and "status" in command:
+                    if self.logged_out:
+                        return CommandResult(1, "", "failed to connect to local tailscaled")
+                    return CommandResult(0, '{"BackendState": "Running"}\n', "")
+                if command[0] == "tailscale" and "logout" in command:
+                    self.logged_out = True
+                    return CommandResult(0, "", "")
+                return super().run(command)
+
+        runner = TailscaleRunner()
+        service = DeveloperAuthService(
+            runner=runner,
+            credential_store=FakeCredentialStore(),
+            environment_store=FakeEnvironmentStore(),
+            code_commands=(),
+            devtunnel_command="devtunnel",
+            tailscale_command="tailscale",
+            tailscale_state_dir=self.ts_state_dir,
+            mac_mirror_dir=self.mirror_dir,
+        )
+
+        audit_entries = service.audit()
+        ts_audit = next(e for e in audit_entries if e.provider == "Tailscale userspace")
+        self.assertEqual(ts_audit.login_status, "logged in")
+        self.assertTrue(any(e.provider == "Mac Mirror Viewer" and e.login_status == "present" for e in audit_entries))
+
+        # Dry-run leaves state intact
+        dry_results = service.remove_supported(False, lambda *_: self.fail("dry-run must not confirm"))
+        self.assertEqual(next(r for r in dry_results if r.provider == "Tailscale userspace").status, "dry-run")
+        self.assertEqual(next(r for r in dry_results if r.provider == "Mac Mirror Viewer").status, "dry-run")
+        self.assertTrue((self.ts_state_dir / "tailscaled.state").exists())
+
+        # Live cleanup logs out and removes state + ui-prefs.json
+        live_results = service.remove_supported(True, lambda *_: True)
+        self.assertEqual(next(r for r in live_results if r.provider == "Tailscale userspace").status, "removed")
+        self.assertEqual(next(r for r in live_results if r.provider == "Mac Mirror Viewer").status, "removed")
+        self.assertIn(("tailscale", f"--socket={DeveloperAuthService.TAILSCALE_PIPE_SOCKET}", "logout"), runner.commands)
+        self.assertFalse((self.ts_state_dir / "tailscaled.state").exists())
+        self.assertFalse((self.ts_state_dir / "tailscaled.pid").exists())
+        self.assertFalse((self.ts_state_dir / "mac-mirror-viewer.pid").exists())
+        self.assertFalse((self.mirror_dir / "ui-prefs.json").exists())
+
+        # Verification confirms no local evidence remains
+        verifier = VerificationService(service, BrowserCatalog(), ProfileFinder(), None)  # type: ignore[arg-type]
+        verified = verifier.verify(
+            CleanerOptions(False, False, False, "all", categories=("developer-auth",), verify=True),
+            include_developer_auth=False,
+        )
+        ts_verify = next(e for e in verified if e.subject == "Tailscale userspace")
+        self.assertEqual(ts_verify.status, "no local evidence found")
+        self.assertFalse(any(e.subject == "Mac Mirror Viewer" for e in verified))
 
 
 if __name__ == "__main__":

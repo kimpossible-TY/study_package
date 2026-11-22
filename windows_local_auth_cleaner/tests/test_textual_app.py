@@ -3,9 +3,9 @@ from __future__ import annotations
 import unittest
 
 try:
-    from browser_cleaner.config import BrowserCatalog
-    from browser_cleaner.models import CleanerOptions
-    from browser_cleaner.textual_app import TextualCleanerApp
+    from local_auth_cleaner.config import BrowserCatalog
+    from local_auth_cleaner.models import CleanerOptions
+    from local_auth_cleaner.textual_app import TextualCleanerApp
     from textual.widgets import Input, SelectionList
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional dev dependency
     if exc.name == "textual":

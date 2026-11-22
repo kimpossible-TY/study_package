@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from browser_cleaner.cleaning import PathCleaner
-from browser_cleaner.models import BrowserDefinition, CleanTarget
-from browser_cleaner.profiles import ProfileFinder
+from local_auth_cleaner.cleaning import PathCleaner
+from local_auth_cleaner.models import BrowserDefinition, CleanTarget
+from local_auth_cleaner.profiles import ProfileFinder
 
 
 class BrowserSafetyTests(unittest.TestCase):

@@ -5,13 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from browser_cleaner.app import BrowserCleanerApp
-from browser_cleaner.cleaning import PathCleaner
-from browser_cleaner.config import BrowserCatalog
-from browser_cleaner.models import BrowserDefinition, CleanerOptions
-from browser_cleaner.profiles import ProfileFinder
-from browser_cleaner.tui import TerminalUI
-from browser_cleaner.vscode import VscodeProfileManager
+from local_auth_cleaner.app import BrowserCleanerApp
+from local_auth_cleaner.cleaning import PathCleaner
+from local_auth_cleaner.config import BrowserCatalog
+from local_auth_cleaner.models import BrowserDefinition, CleanerOptions
+from local_auth_cleaner.profiles import ProfileFinder
+from local_auth_cleaner.tui import TerminalUI
+from local_auth_cleaner.vscode import VscodeProfileManager
 
 
 class NoRunningProcesses:

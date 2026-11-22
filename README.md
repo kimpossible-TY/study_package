@@ -74,14 +74,15 @@ immediately). `mac-mirror` performs the full one-shot sequence:
      `mac_vnc_tunnel.py` automatically starts the local SOCKS5 TCP forwarder
      (`127.0.0.1:15900`) and launches `vncviewer.exe -DotWhenNoCursor=1 127.0.0.1:15900`.
 
-Before leaving a shared PC, run `mac-mirror-stop --logout` (in addition to `wac`) to
-close the viewer, stop any active tunnel, log out of Tailscale, and delete
-`%USERPROFILE%\.tailscale\tailscaled.state`.
+Before leaving a shared PC, run `wac` (which now also logs out Tailscale userspace,
+removes `%USERPROFILE%\.tailscale\tailscaled.state` and `ui-prefs.json`, and cleans
+the managed PowerShell profile block including `mac` / `mac-mirror` / `mac-mirror-stop`),
+or run `mac-mirror-stop --logout` directly.
 
 `wac` removes the managed settings during default/developer-auth cleanup. Existing
 unrelated profile content is preserved; profiles containing only the managed
-settings are deleted. Close existing shells after cleanup to unload `mac` and the
-prompt. `computer_setting.ps1` installs the pinned v0.2.0 release through its standalone
-installer, verifies the executable SHA-256, and refreshes the copy in Downloads.
-Re-running setup replaces older installed executables, including when old Scoop
-shims exist.
+settings are deleted. Close existing shells after cleanup to unload `mac`, `mac-mirror`,
+and the prompt. `computer_setting.ps1` installs the pinned v0.3.0 release through its
+standalone installer, verifies the executable SHA-256, and refreshes the copy in
+Downloads. Re-running setup replaces older installed executables, including when old
+Scoop shims exist.

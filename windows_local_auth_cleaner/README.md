@@ -24,7 +24,7 @@ This installer:
 To install a specific version or uninstall:
 ```powershell
 # Specific tag:
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Tag "v0.2.0"
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Tag "v0.3.0"
 
 # Uninstall:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/windows_local_auth_cleaner/install.ps1))) -Uninstall

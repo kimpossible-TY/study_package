@@ -5,8 +5,8 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from browser_cleaner.models import CleanResult, CleanTarget
-from browser_cleaner.tui import TerminalUI
+from local_auth_cleaner.models import CleanResult, CleanTarget
+from local_auth_cleaner.tui import TerminalUI
 
 
 class TuiTests(unittest.TestCase):

@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from browser_cleaner.developer_auth import DeveloperAuthService
-from browser_cleaner.powershell import PowerShellProfileManager
+from local_auth_cleaner.developer_auth import DeveloperAuthService
+from local_auth_cleaner.powershell import PowerShellProfileManager
 
 
 class PowerShellProfileTests(unittest.TestCase):

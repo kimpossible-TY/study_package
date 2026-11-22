@@ -106,6 +106,32 @@ class VerificationService:
             details,
         ))
 
+        ts_state = self._developer_auth.tailscale_userspace_status()
+        ts_state_path = self._developer_auth.tailscale_state_dir / "tailscaled.state"
+        if ts_state == "not logged in" and not ts_state_path.exists() and not ts_state_path.is_symlink():
+            entries.append(VerificationEntry(
+                "Tailscale userspace",
+                str(ts_state_path),
+                "no local evidence found",
+                "no active Tailscale userspace session or tailscaled.state file was found",
+            ))
+        else:
+            entries.append(VerificationEntry(
+                "Tailscale userspace",
+                str(ts_state_path),
+                "manual verification required",
+                f"{ts_state}; run mac-mirror-stop --logout or wac to clear Tailscale userspace state",
+            ))
+
+        prefs = self._developer_auth.mac_mirror_prefs_path
+        if prefs is not None and (prefs.exists() or prefs.is_symlink()):
+            entries.append(VerificationEntry(
+                "Mac Mirror Viewer",
+                str(prefs),
+                "manual verification required",
+                "local UI preferences file still exists (no credentials are stored in it)",
+            ))
+
         credentials = self._developer_auth.credential_entries()
         if credentials is None:
             entries.append(VerificationEntry("Windows Credential Manager", "current-user supported targets", "manual verification required", "Windows Credential API is unavailable"))

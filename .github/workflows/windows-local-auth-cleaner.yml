@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag matching the package version (e.g. v0.2.0)"
+        description: "Release tag matching the package version (e.g. v0.3.0)"
         required: true
-        default: "v0.2.0"
+        default: "v0.3.0"
         type: string
   push:
     branches: [main]
@@ -66,7 +66,7 @@ jobs:
           pyinstaller --noconfirm --clean --onefile
           --name windows-local-auth-cleaner
           --collect-all textual
-          --hidden-import browser_cleaner.textual_app
+          --hidden-import local_auth_cleaner.textual_app
           main.py
 
       - name: Smoke test executable and prepare release assets

@@ -5,14 +5,14 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from browser_cleaner.app import BrowserCleanerApp
-from browser_cleaner.cleaning import PathCleaner
-from browser_cleaner.cli import ArgumentParserFactory, CleanerOptionsFactory
-from browser_cleaner.config import BrowserCatalog
-from browser_cleaner.models import BrowserDefinition, CleanerOptions
-from browser_cleaner.processes import BrowserProcessManager
-from browser_cleaner.profiles import ProfileFinder
-from browser_cleaner.tui import TerminalUI
+from local_auth_cleaner.app import BrowserCleanerApp
+from local_auth_cleaner.cleaning import PathCleaner
+from local_auth_cleaner.cli import ArgumentParserFactory, CleanerOptionsFactory
+from local_auth_cleaner.config import BrowserCatalog
+from local_auth_cleaner.models import BrowserDefinition, CleanerOptions
+from local_auth_cleaner.processes import BrowserProcessManager
+from local_auth_cleaner.profiles import ProfileFinder
+from local_auth_cleaner.tui import TerminalUI
 
 
 class MockRunningProcesses(BrowserProcessManager):

@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import sys
 
-from browser_cleaner.app import BrowserCleanerApp
-from browser_cleaner.cli import ArgumentParserFactory, CleanerOptionsFactory
-from browser_cleaner.config import BrowserCatalog
+from local_auth_cleaner.app import BrowserCleanerApp
+from local_auth_cleaner.cli import ArgumentParserFactory, CleanerOptionsFactory
+from local_auth_cleaner.config import BrowserCatalog
 
 
 def main() -> int:
@@ -18,7 +18,7 @@ def main() -> int:
         return BrowserCleanerApp.from_options(options, catalog).run()
 
     try:
-        from browser_cleaner.textual_app import TextualCleanerApp
+        from local_auth_cleaner.textual_app import TextualCleanerApp
     except ModuleNotFoundError as exc:
         if exc.name != "textual":
             raise

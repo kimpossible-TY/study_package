@@ -762,8 +762,8 @@ Invoke-Step "Preparing Neovim configuration folder..." {
     }
 }
 
-Invoke-Step "Installing Windows Local Auth Cleaner v0.2.0 from GitHub Release..." {
-    $CleanerReleaseTag = 'v0.2.0'
+Invoke-Step "Installing Windows Local Auth Cleaner v0.3.0 from GitHub Release..." {
+    $CleanerReleaseTag = 'v0.3.0'
     $ReleaseBase = "https://github.com/kimpossible-TY/study_package/releases/download/$CleanerReleaseTag"
     $InstallerPath = Join-Path ([IO.Path]::GetTempPath()) ("windows-auth-cleaner-install-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
     try {

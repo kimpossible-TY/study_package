@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from browser_cleaner.cli import ArgumentParserFactory
+from local_auth_cleaner.cli import ArgumentParserFactory
 
 
 class CliTests(unittest.TestCase):

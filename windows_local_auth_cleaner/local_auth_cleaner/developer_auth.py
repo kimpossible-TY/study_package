@@ -9,6 +9,7 @@ blobs, or registry environment-variable values.
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import re
 import shutil
@@ -17,7 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .models import AccountAuditEntry, ActionResult
+from .cleaning import PathCleaner
+from .models import AccountAuditEntry, ActionResult, CleanTarget
 from .powershell import PowerShellProfileManager
 
 
@@ -240,6 +242,14 @@ class UserEnvironmentStore:
 class DeveloperAuthService:
     """Audits and removes only explicitly supported developer-authentication records."""
 
+    TAILSCALE_PIPE_SOCKET = r"\\.\pipe\tailscale-dev"
+    TAILSCALE_STATE_FILES = (
+        "tailscaled.state",
+        "tailscaled.pid",
+        "mac-mirror-viewer.pid",
+        "mac-vnc-tunnel.json",
+    )
+
     def __init__(
         self,
         runner: CommandRunner | None = None,
@@ -249,6 +259,9 @@ class DeveloperAuthService:
         code_commands: tuple[str, ...] = ("code", "code-insiders"),
         devtunnel_command: str | None = None,
         powershell_profiles: PowerShellProfileManager | None = None,
+        tailscale_command: str | None = None,
+        tailscale_state_dir: Path | None = None,
+        mac_mirror_dir: Path | None = None,
     ) -> None:
         self._runner = runner or CommandRunner()
         self._credential_store = credential_store or WindowsCredentialStore()
@@ -258,6 +271,14 @@ class DeveloperAuthService:
         self._code_commands = code_commands
         self._devtunnel_command = devtunnel_command or self._find_devtunnel_command()
         self.powershell_profiles = powershell_profiles or PowerShellProfileManager()
+        self._tailscale_command = tailscale_command or self._find_tailscale_command()
+        self._tailscale_state_dir = tailscale_state_dir if tailscale_state_dir is not None else (Path.home() / ".tailscale")
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        self._mac_mirror_dir = (
+            mac_mirror_dir
+            if mac_mirror_dir is not None
+            else (Path(local_app_data) / "Programs" / "mac-mirror" if local_app_data else None)
+        )
 
     def audit(self) -> list[AccountAuditEntry]:
         """Return a complete best-effort audit; one unavailable tool never hides others."""
@@ -267,6 +288,7 @@ class DeveloperAuthService:
         entries.extend(self._audit_vscode())
         entries.extend(self._audit_remote_tunnels())
         entries.extend(self._audit_devtunnel())
+        entries.extend(self._audit_tailscale_mac_mirror())
         entries.extend(self._audit_credentials())
         entries.extend(self._audit_environment())
         entries.extend(self.powershell_profiles.audit())
@@ -346,6 +368,64 @@ class DeveloperAuthService:
             return "logged in"
         return "unknown"
 
+    @staticmethod
+    def _find_tailscale_command() -> str:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            executable = Path(local_app_data) / "Programs" / "tailscale" / "tailscale.exe"
+            if executable.is_file():
+                return str(executable)
+        command = shutil.which("tailscale")
+        if command:
+            return command
+        return "tailscale"
+
+    @property
+    def tailscale_command(self) -> str:
+        """The executable used for Tailscale userspace status/logout commands."""
+        return self._tailscale_command
+
+    @property
+    def tailscale_state_dir(self) -> Path:
+        """Directory holding Tailscale userspace state and mac-mirror PID files."""
+        return self._tailscale_state_dir
+
+    @property
+    def mac_mirror_prefs_path(self) -> Path | None:
+        """Path to non-sensitive mac-mirror UI preferences, if LOCALAPPDATA is known."""
+        if self._mac_mirror_dir is None:
+            return None
+        return self._mac_mirror_dir / "ui-prefs.json"
+
+    def _query_tailscale_daemon_state(self) -> str | None:
+        """Return Tailscale BackendState if the userspace daemon responds, else None."""
+        try:
+            outcome = self._runner.run((self._tailscale_command, f"--socket={self.TAILSCALE_PIPE_SOCKET}", "status", "--json"))
+        except OSError:
+            return None
+        if outcome is None or not outcome.stdout.strip():
+            return None
+        try:
+            data = json.loads(outcome.stdout)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict) and isinstance(data.get("BackendState"), str):
+            return data["BackendState"]
+        return None
+
+    def tailscale_userspace_status(self) -> str:
+        """Inspect Tailscale userspace session/state without exposing account details."""
+        state_file = self._tailscale_state_dir / "tailscaled.state"
+        has_state_file = state_file.exists() or state_file.is_symlink()
+        backend = self._query_tailscale_daemon_state()
+        if backend in {"Running", "Starting"}:
+            return "logged in"
+        if backend == "Stopped":
+            return "stopped (state present)" if has_state_file else "stopped"
+        if has_state_file:
+            return "state file present"
+        return "not logged in"
+
     def remove_supported(self, apply_changes: bool, confirm: Callable[[str, str], bool]) -> list[ActionResult]:
         """Remove supported records, requesting a strong confirmation for every item.
 
@@ -357,6 +437,7 @@ class DeveloperAuthService:
         results.extend(self._remove_gcm(apply_changes, confirm))
         results.extend(self._remove_tunnels(apply_changes, confirm))
         results.extend(self._remove_devtunnel(apply_changes, confirm))
+        results.extend(self._remove_tailscale_mac_mirror(apply_changes, confirm))
         results.extend(self._remove_credentials(apply_changes, confirm))
         results.extend(self._remove_environment(apply_changes, confirm))
         results.extend(self.powershell_profiles.remove(apply_changes, confirm))
@@ -451,6 +532,33 @@ class DeveloperAuthService:
             )
         ]
 
+    def _audit_tailscale_mac_mirror(self) -> list[AccountAuditEntry]:
+        entries: list[AccountAuditEntry] = []
+        ts_state = self.tailscale_userspace_status()
+        entries.append(
+            AccountAuditEntry(
+                "Tailscale userspace",
+                "mac-mirror session / state (account details not displayed)",
+                str(self._tailscale_state_dir / "tailscaled.state"),
+                ts_state,
+                "yes" if ts_state != "not logged in" else "no",
+                "no",
+            )
+        )
+        prefs = self.mac_mirror_prefs_path
+        if prefs is not None and (prefs.exists() or prefs.is_symlink()):
+            entries.append(
+                AccountAuditEntry(
+                    "Mac Mirror Viewer",
+                    "UI preferences (no credentials stored)",
+                    str(prefs),
+                    "present",
+                    "yes",
+                    "no",
+                )
+            )
+        return entries
+
     def _audit_environment(self) -> list[AccountAuditEntry]:
         current_names = self._environment_store.list_token_names()
         audit_names = self._environment_store.audit_names()
@@ -540,6 +648,116 @@ class DeveloperAuthService:
                     "logout completed but sign-out could not be confirmed; check devtunnel user show manually",
                 )
         return [result]
+
+    def _safe_unlink_file(self, path: Path, root: Path, provider: str) -> str | None:
+        """Safely unlink a single regular file under root; return error reason or None."""
+        if not path.exists() and not path.is_symlink():
+            return None
+        reason = PathCleaner()._unsafe_reason(CleanTarget(provider, path.name, path, "developer-auth", root))
+        if reason:
+            return reason
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return "could not remove local file"
+        return None
+
+    def _read_tracked_pids(self) -> list[int]:
+        pids: list[int] = []
+        for name in ("mac-mirror-viewer.pid", "tailscaled.pid"):
+            path = self._tailscale_state_dir / name
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                pid = int(path.read_text(encoding="utf-8").strip())
+                if pid > 0:
+                    pids.append(pid)
+            except (OSError, ValueError):
+                continue
+        tunnel_json = self._tailscale_state_dir / "mac-vnc-tunnel.json"
+        if tunnel_json.is_file() and not tunnel_json.is_symlink():
+            try:
+                data = json.loads(tunnel_json.read_text(encoding="utf-8"))
+                pid = int(data.get("pid", 0) or 0) if isinstance(data, dict) else 0
+                if pid > 0:
+                    pids.append(pid)
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        return pids
+
+    def _remove_tailscale_mac_mirror(self, apply: bool, confirm: Callable[[str, str], bool]) -> list[ActionResult]:
+        results: list[ActionResult] = []
+        state_files = [self._tailscale_state_dir / name for name in self.TAILSCALE_STATE_FILES]
+        has_any_file = any(p.exists() or p.is_symlink() for p in state_files)
+        daemon_state = self._query_tailscale_daemon_state()
+
+        if daemon_state is not None or has_any_file:
+            location = str(self._tailscale_state_dir / "tailscaled.state")
+            if not apply:
+                results.append(self._action(
+                    "Tailscale userspace", "mac-mirror session / state", location, "dry-run",
+                    "would run tailscale logout, stop tracked mac-mirror/tailscaled PIDs, and remove tailscaled.state",
+                ))
+            elif not confirm("Tailscale userspace session and state", "LOGOUT TAILSCALE"):
+                results.append(self._action(
+                    "Tailscale userspace", "mac-mirror session / state", location, "manual",
+                    "strong confirmation declined",
+                ))
+            else:
+                errors: list[str] = []
+                if daemon_state is not None:
+                    try:
+                        outcome = self._runner.run((self._tailscale_command, f"--socket={self.TAILSCALE_PIPE_SOCKET}", "logout"))
+                        if outcome is None or outcome.returncode != 0:
+                            errors.append("tailscale logout did not confirm success")
+                    except OSError:
+                        errors.append("could not start tailscale logout")
+
+                if os.name == "nt":
+                    for pid in self._read_tracked_pids():
+                        try:
+                            self._runner.run(("taskkill", "/PID", str(pid), "/F"))
+                        except OSError:
+                            pass
+
+                for path in state_files:
+                    err = self._safe_unlink_file(path, self._tailscale_state_dir, "Tailscale userspace")
+                    if err:
+                        errors.append(f"{path.name}: {err}")
+
+                state_file = self._tailscale_state_dir / "tailscaled.state"
+                if errors or state_file.exists() or state_file.is_symlink():
+                    detail = "; ".join(errors) if errors else "tailscaled.state still exists after cleanup"
+                    results.append(self._action("Tailscale userspace", "mac-mirror session / state", location, "error", detail))
+                else:
+                    results.append(self._action(
+                        "Tailscale userspace", "mac-mirror session / state", location, "removed",
+                        "logged out Tailscale userspace session and removed local state files",
+                    ))
+
+        prefs = self.mac_mirror_prefs_path
+        if prefs is not None and (prefs.exists() or prefs.is_symlink()):
+            location = str(prefs)
+            if not apply:
+                results.append(self._action(
+                    "Mac Mirror Viewer", "UI preferences", location, "dry-run",
+                    "would remove local mac-mirror UI preferences",
+                ))
+            elif not confirm(f"Mac Mirror Viewer UI preferences '{prefs}'", "REMOVE MAC-MIRROR PREFS"):
+                results.append(self._action(
+                    "Mac Mirror Viewer", "UI preferences", location, "manual",
+                    "strong confirmation declined",
+                ))
+            else:
+                err = self._safe_unlink_file(prefs, prefs.parent, "Mac Mirror Viewer")
+                if err:
+                    results.append(self._action("Mac Mirror Viewer", "UI preferences", location, "error", err))
+                else:
+                    results.append(self._action("Mac Mirror Viewer", "UI preferences", location, "removed", "removed local UI preferences"))
+
+        return results
 
     def _remove_credentials(self, apply: bool, confirm: Callable[[str, str], bool]) -> list[ActionResult]:
         entries = self._credential_store.list_supported_entries()

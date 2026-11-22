@@ -6,7 +6,7 @@ $OriginalUserProfile = $env:USERPROFILE
 try {
     $env:USERPROFILE = $Root
     $global:CleanerTestFixtureUserPath = 'existing-entry'
-    $global:CleanerTestPayload = [Text.Encoding]::ASCII.GetBytes('fixture executable v0.2.0')
+    $global:CleanerTestPayload = [Text.Encoding]::ASCII.GetBytes('fixture executable v0.3.0')
     $global:CleanerTestBadChecksum = $false
     $global:CleanerTestRequestedUrls = @()
     $Installer = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\windows_local_auth_cleaner\install.ps1'))
@@ -28,7 +28,7 @@ try {
         else { [IO.File]::WriteAllBytes($OutFile, $global:CleanerTestPayload) }
     }
     $InstallDir = Join-Path $Root 'installed'
-    & $FixtureInstaller -Tag v0.2.0 -InstallDir $InstallDir
+    & $FixtureInstaller -Tag v0.3.0 -InstallDir $InstallDir
     $Exe = Join-Path $InstallDir 'windows-local-auth-cleaner.exe'
     $Expected = [Convert]::ToBase64String($global:CleanerTestPayload)
     if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($Exe)) -ne $Expected) { throw 'Executable was not installed.' }
@@ -37,16 +37,16 @@ try {
     if (($env:Path -split [IO.Path]::PathSeparator)[0] -ne $InstallDir) { throw 'New installation must precede stale Scoop shims.' }
     $DownloadsExe = Join-Path $Root 'Downloads\windows-local-auth-cleaner.exe'
     if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($DownloadsExe)) -ne $Expected) { throw 'Downloads copy missing.' }
-    & $FixtureInstaller -Tag v0.2.0 -InstallDir $InstallDir
+    & $FixtureInstaller -Tag v0.3.0 -InstallDir $InstallDir
     if (@($global:CleanerTestFixtureUserPath -split [IO.Path]::PathSeparator | Where-Object { $_ -eq $InstallDir }).Count -ne 1) { throw 'PATH entry duplicated.' }
     $global:CleanerTestBadChecksum = $true
     $global:CleanerTestPayload = [Text.Encoding]::ASCII.GetBytes('bad update')
     $Refused = $false
-    try { & $FixtureInstaller -Tag v0.2.0 -InstallDir $InstallDir } catch { $Refused = $true }
+    try { & $FixtureInstaller -Tag v0.3.0 -InstallDir $InstallDir } catch { $Refused = $true }
     if (!$Refused) { throw 'Checksum mismatch was accepted.' }
     if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($Exe)) -ne $Expected) { throw 'Failed update replaced the previous executable.' }
     if (@(Get-ChildItem $InstallDir -Filter 'download-*').Count) { throw 'Temporary downloads left behind.' }
-    if (@($global:CleanerTestRequestedUrls | Where-Object { $_ -notlike 'https://github.com/kimpossible-TY/study_package/releases/download/v0.2.0/*' }).Count) { throw 'Installer used an unexpected release URL.' }
+    if (@($global:CleanerTestRequestedUrls | Where-Object { $_ -notlike 'https://github.com/kimpossible-TY/study_package/releases/download/v0.3.0/*' }).Count) { throw 'Installer used an unexpected release URL.' }
     Write-Host 'Installer version URL, checksum, update, PATH, and Downloads tests passed.'
 }
 finally {
