@@ -4,6 +4,14 @@ Subprojects:
 
 - [windows_local_auth_cleaner](windows_local_auth_cleaner/README.md)
 
+## Quick Start (Windows)
+
+Run the one-shot bootstrapper directly in Windows PowerShell (no administrator privileges required):
+
+```powershell
+irm https://raw.githubusercontent.com/kimpossible-TY/study_package/main/computer_setting.ps1 | iex
+```
+
 `computer_setting.ps1` bootstraps the current user's Windows development tools,
 including Microsoft's standalone Dev Tunnel CLI. It installs `devtunnel.exe` under
 `%LOCALAPPDATA%\Programs\devtunnel` and configures the user/session `PATH` without
