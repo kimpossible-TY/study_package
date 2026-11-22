@@ -1,0 +1,150 @@
+name: Build Mac Mirror Viewer
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag for mac-mirror-viewer.exe (e.g. mac-mirror-v1.0.0)"
+        required: true
+        default: "mac-mirror-v1.0.0"
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "mac_mirror_viewer/**"
+      - "mac_vnc_tunnel.py"
+      - "computer_setting.ps1"
+      - "test/**"
+      - ".github/workflows/mac-mirror-viewer.yml"
+    tags: ["mac-mirror-v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-mirror-viewer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-viewer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ensure MinGW-w64 x86_64 toolchain
+        run: |
+          $mingwBin = "C:\msys64\mingw64\bin"
+          if (!(Test-Path (Join-Path $mingwBin "g++.exe"))) {
+            choco install mingw --no-progress -y
+            $mingwBin = "C:\ProgramData\mingw64\mingw64\bin"
+          }
+          "$mingwBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build standalone mac-mirror-viewer.exe
+        run: |
+          cmake -G "MinGW Makefiles" -S mac_mirror_viewer -B mac_mirror_viewer/build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=gcc.exe `
+            -DCMAKE_CXX_COMPILER=g++.exe
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
+          cmake --build mac_mirror_viewer/build -j 4
+          if ($LASTEXITCODE -ne 0) { throw "CMake build failed." }
+
+      - name: Audit zero external DLL dependencies and smoke-test CLI
+        id: assets
+        env:
+          REQUESTED_TAG: ${{ inputs.tag_name }}
+        run: |
+          $exe = "mac_mirror_viewer/build/mac-mirror-viewer.exe"
+          if (!(Test-Path $exe)) { throw "mac-mirror-viewer.exe was not produced." }
+
+          $helpText = & ./$exe --help
+          if ($LASTEXITCODE -ne 0) { throw "mac-mirror-viewer.exe --help failed." }
+          if (($helpText -join "`n") -notmatch "--socks5") { throw "Expected --socks5 option in --help output." }
+
+          $dump = & objdump.exe -p $exe
+          $dlls = @(
+            $dump |
+              Select-String -Pattern "DLL Name:\s*(\S+)" |
+              ForEach-Object { $_.Matches[0].Groups[1].Value.ToLowerInvariant() }
+          )
+          $allowed = @(
+            "advapi32.dll",
+            "bcrypt.dll",
+            "d2d1.dll",
+            "d3d11.dll",
+            "dwmapi.dll",
+            "dwrite.dll",
+            "dxgi.dll",
+            "gdi32.dll",
+            "imm32.dll",
+            "kernel32.dll",
+            "msvcrt.dll",
+            "ole32.dll",
+            "shell32.dll",
+            "ucrtbase.dll",
+            "user32.dll",
+            "ws2_32.dll"
+          )
+          foreach ($dll in $dlls) {
+            if (($allowed -notcontains $dll) -and !$dll.StartsWith("api-ms-win-")) {
+              throw "Unexpected non-system DLL dependency: $dll"
+            }
+          }
+
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  mac-mirror-viewer.exe" | Set-Content "$exe.sha256" -Encoding ascii
+
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $env:GITHUB_REF_NAME
+          } elseif ($env:REQUESTED_TAG) {
+            $env:REQUESTED_TAG
+          } else {
+            "mac-mirror-v1.0.0"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Run Python, C++ RFB core, and PowerShell tests
+        run: |
+          python -W default -m unittest discover -s test -v
+          if ($LASTEXITCODE -ne 0) { throw "Python / RFB core tests failed." }
+          foreach ($shell in @('powershell.exe', 'pwsh.exe')) {
+            & $shell -NoProfile -NonInteractive -File ./tests/test_computer_setting_profile.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Profile tests failed in $shell." }
+          }
+
+      - name: Upload standalone viewer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-mirror-viewer
+          path: |
+            mac_mirror_viewer/build/mac-mirror-viewer.exe
+            mac_mirror_viewer/build/mac-mirror-viewer.exe.sha256
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: github.event_name == 'workflow_dispatch' || (github.ref_type == 'tag' && startsWith(github.ref_name, 'mac-mirror-v'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.assets.outputs.tag }}
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --title "Mac Mirror Viewer $env:RELEASE_TAG" --generate-notes --latest=false
+            if ($LASTEXITCODE -ne 0) { throw "Could not create release $env:RELEASE_TAG." }
+          }
+          gh release upload $env:RELEASE_TAG `
+            mac_mirror_viewer/build/mac-mirror-viewer.exe `
+            mac_mirror_viewer/build/mac-mirror-viewer.exe.sha256 `
+            --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload release assets." }

@@ -3,7 +3,20 @@
 # Windows user-level development environment bootstrapper
 # ==============================================================================
 
+param(
+    [switch]$SkipMacMirror,
+    [string]$MacHost,
+    [string]$TailscaleAuthKey
+)
+
 $ErrorActionPreference = "Stop"
+
+$MacMirrorViewerReleaseTag = "mac-mirror-v1.0.0"
+$MacMirrorViewerUrl = "https://github.com/kimpossible-TY/study_package/releases/download/$MacMirrorViewerReleaseTag/mac-mirror-viewer.exe"
+$TigerVncViewerUrl = "https://sourceforge.net/projects/tigervnc/files/stable/1.16.2/vncviewer64-1.16.2.exe/download"
+$TailscaleStableMetaUrl = "https://pkgs.tailscale.com/stable/?mode=json"
+$TailscaleStableBaseUrl = "https://pkgs.tailscale.com/stable"
+$MacMirrorTunnelUrl = "https://raw.githubusercontent.com/kimpossible-TY/study_package/main/mac_vnc_tunnel.py"
 
 $ScoopPackages = @(
     "7zip",
@@ -33,6 +46,9 @@ function Set-PersonalPowerShellProfile {
 $PersonalPaths = @(
     (Join-Path $env:USERPROFILE 'scoop\shims'),
     (Join-Path $env:LOCALAPPDATA 'Programs\devtunnel'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\tailscale'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\tigervnc'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\mac-mirror'),
     (Join-Path $env:LOCALAPPDATA 'Programs\windows-local-auth-cleaner')
 )
 foreach ($Path in $PersonalPaths) {
@@ -43,6 +59,24 @@ foreach ($Path in $PersonalPaths) {
 
 function global:mac {
     ssh -o PubkeyAuthentication=no taeyoung@127.0.0.1 @args
+}
+
+function global:mac-mirror {
+    $TunnelScript = Join-Path $env:LOCALAPPDATA 'Programs\mac-mirror\mac_vnc_tunnel.py'
+    $PythonExe = Join-Path $env:USERPROFILE 'scoop\shims\python.exe'
+    if (!(Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        $PythonExe = 'python'
+    }
+    & $PythonExe $TunnelScript --connect @args
+}
+
+function global:mac-mirror-stop {
+    $TunnelScript = Join-Path $env:LOCALAPPDATA 'Programs\mac-mirror\mac_vnc_tunnel.py'
+    $PythonExe = Join-Path $env:USERPROFILE 'scoop\shims\python.exe'
+    if (!(Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        $PythonExe = 'python'
+    }
+    & $PythonExe $TunnelScript --stop @args
 }
 
 if ($Host.Name -ne 'Windows PowerShell ISE Host') {
@@ -151,16 +185,59 @@ function Test-WindowsTerminalVersion {
     }
 }
 
+function Enable-Tls12 {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+
 function Update-ProcessPath {
     $PathParts = @(
         [Environment]::GetEnvironmentVariable("Path", "Machine"),
         [Environment]::GetEnvironmentVariable("Path", "User"),
         (Join-Path $env:USERPROFILE "scoop\shims"),
         (Join-Path $env:LOCALAPPDATA "Programs\devtunnel"),
+        (Join-Path $env:LOCALAPPDATA "Programs\tailscale"),
+        (Join-Path $env:LOCALAPPDATA "Programs\tigervnc"),
+        (Join-Path $env:LOCALAPPDATA "Programs\mac-mirror"),
         (Join-Path $env:LOCALAPPDATA "Programs\windows-local-auth-cleaner")
     )
 
     $env:Path = ($PathParts | Where-Object { $_ }) -join [IO.Path]::PathSeparator
+}
+
+function Add-UserPathEntry {
+    param([Parameter(Mandatory = $true)][string]$Directory)
+
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $UserPathParts = @($UserPath -split [IO.Path]::PathSeparator | Where-Object { $_ })
+    if ($UserPathParts -notcontains $Directory) {
+        $NewUserPath = (@($UserPathParts) + $Directory) -join [IO.Path]::PathSeparator
+        [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+    }
+    Update-ProcessPath
+}
+
+function Test-PeExecutable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [long]$MinBytes = 1048576
+    )
+
+    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    $Item = Get-Item -LiteralPath $Path
+    if ($Item.Length -lt $MinBytes) {
+        return $false
+    }
+    $Stream = [IO.File]::OpenRead($Path)
+    try {
+        $Header = New-Object byte[] 2
+        $Read = $Stream.Read($Header, 0, 2)
+        return ($Read -eq 2 -and $Header[0] -eq 0x4D -and $Header[1] -eq 0x5A)
+    }
+    finally {
+        $Stream.Dispose()
+    }
 }
 
 function Test-GitWorkTreeClean {
@@ -282,16 +359,262 @@ function Install-DevTunnel {
         }
     }
 
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $UserPathParts = @($UserPath -split [IO.Path]::PathSeparator | Where-Object { $_ })
-    if ($UserPathParts -notcontains $InstallDir) {
-        $NewUserPath = (@($UserPathParts) + $InstallDir) -join [IO.Path]::PathSeparator
-        [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
-    }
-    Update-ProcessPath
+    Add-UserPathEntry -Directory $InstallDir
 
     Write-Host "Dev Tunnel CLI installed: $Executable" -ForegroundColor DarkGray
     Write-Host "To sign in using your own phone/browser: devtunnel user login -g -d" -ForegroundColor DarkGray
+}
+
+function Install-TailscaleUserspace {
+    $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\tailscale"
+    $StateDir = Join-Path $env:USERPROFILE ".tailscale"
+    $TailscaleExe = Join-Path $InstallDir "tailscale.exe"
+    $TailscaledExe = Join-Path $InstallDir "tailscaled.exe"
+
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
+
+    if ((Test-Path -LiteralPath $TailscaleExe -PathType Leaf) -and (Test-Path -LiteralPath $TailscaledExe -PathType Leaf)) {
+        Add-UserPathEntry -Directory $InstallDir
+        Write-Host "Tailscale userspace binaries are already installed: $InstallDir" -ForegroundColor DarkGray
+        return
+    }
+
+    Enable-Tls12
+    $Meta = Invoke-RestMethod -Uri $TailscaleStableMetaUrl -UseBasicParsing
+    $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "amd64" }
+    $MsiName = $Meta.MSIs.$Arch
+    if ([string]::IsNullOrWhiteSpace($MsiName)) {
+        throw "Could not resolve Tailscale MSI filename for architecture '$Arch'."
+    }
+
+    $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("tailscale-extract-{0}" -f [Guid]::NewGuid().ToString("N"))
+    $ExtractDir = Join-Path $TempRoot "extract"
+    $MsiPath = Join-Path $TempRoot $MsiName
+    New-Item -ItemType Directory -Path $ExtractDir -Force | Out-Null
+
+    try {
+        Invoke-WebRequest `
+            -Uri "$TailscaleStableBaseUrl/$MsiName" `
+            -UseBasicParsing `
+            -OutFile $MsiPath
+
+        $MsiProcess = Start-Process -FilePath "msiexec.exe" `
+            -ArgumentList "/a `"$MsiPath`" /qn TARGETDIR=`"$ExtractDir`"" `
+            -Wait -PassThru -NoNewWindow
+        if ($MsiProcess.ExitCode -ne 0) {
+            throw "Failed to extract Tailscale MSI without admin privileges (msiexec exit code: $($MsiProcess.ExitCode))."
+        }
+
+        $FoundDaemon = Get-ChildItem -LiteralPath $ExtractDir -Recurse -Filter "tailscaled.exe" -File | Select-Object -First 1
+        if (!$FoundDaemon) {
+            throw "tailscaled.exe was not found in the extracted Tailscale MSI."
+        }
+
+        $SourceDir = $FoundDaemon.DirectoryName
+        Get-ChildItem -LiteralPath $SourceDir -File | Where-Object { $_.Extension -in @(".exe", ".dll") } | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $InstallDir $_.Name) -Force
+        }
+
+        if (!(Test-Path -LiteralPath $TailscaleExe -PathType Leaf) -or !(Test-Path -LiteralPath $TailscaledExe -PathType Leaf)) {
+            throw "Tailscale binaries were not extracted cleanly into $InstallDir."
+        }
+
+        $null = & $TailscaleExe version
+        if ($LASTEXITCODE -ne 0) {
+            throw "The extracted Tailscale CLI could not be started."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $TempRoot) {
+            Remove-Item -LiteralPath $TempRoot -Recurse -Force
+        }
+    }
+
+    Add-UserPathEntry -Directory $InstallDir
+    Write-Host "Tailscale userspace binaries installed: $InstallDir" -ForegroundColor DarkGray
+}
+
+function Install-MacMirrorViewer {
+    $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\mac-mirror"
+    $Executable = Join-Path $InstallDir "mac-mirror-viewer.exe"
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+    if (![string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $LocalCandidates = @(
+            (Join-Path $PSScriptRoot "mac_mirror_viewer\build\mac-mirror-viewer.exe"),
+            (Join-Path $PSScriptRoot "mac-mirror-viewer.exe"),
+            (Join-Path $PSScriptRoot "dist\mac-mirror-viewer.exe")
+        )
+        foreach ($Candidate in $LocalCandidates) {
+            if (Test-PeExecutable -Path $Candidate -MinBytes 262144) {
+                Copy-Item -LiteralPath $Candidate -Destination $Executable -Force
+                Add-UserPathEntry -Directory $InstallDir
+                Write-Host "Mac Mirror Viewer installed from local build: $Executable" -ForegroundColor DarkGray
+                return $true
+            }
+        }
+    }
+
+    if (Test-PeExecutable -Path $Executable -MinBytes 262144) {
+        Add-UserPathEntry -Directory $InstallDir
+        Write-Host "Mac Mirror Viewer is already installed: $Executable" -ForegroundColor DarkGray
+        return $true
+    }
+
+    Enable-Tls12
+    $DownloadPath = Join-Path $InstallDir ("mac-mirror-viewer-{0}.exe" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        Invoke-WebRequest `
+            -Uri $MacMirrorViewerUrl `
+            -UseBasicParsing `
+            -MaximumRedirection 10 `
+            -OutFile $DownloadPath
+        if (Test-PeExecutable -Path $DownloadPath -MinBytes 262144) {
+            Move-Item -LiteralPath $DownloadPath -Destination $Executable -Force
+            Add-UserPathEntry -Directory $InstallDir
+            Write-Host "Mac Mirror Viewer installed from GitHub Release: $Executable" -ForegroundColor DarkGray
+            return $true
+        }
+    }
+    catch {
+        Write-Host "Mac Mirror Viewer release download skipped ($($_.Exception.Message))." -ForegroundColor DarkGray
+    }
+    finally {
+        if (Test-Path -LiteralPath $DownloadPath) {
+            Remove-Item -LiteralPath $DownloadPath -Force
+        }
+    }
+
+    if (![string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $ViewerSrcRoot = Join-Path $PSScriptRoot "mac_mirror_viewer"
+        $GccCmd = Get-Command "gcc.exe" -ErrorAction SilentlyContinue
+        $GxxCmd = Get-Command "g++.exe" -ErrorAction SilentlyContinue
+        if ((Test-Path -LiteralPath (Join-Path $ViewerSrcRoot "CMakeLists.txt") -PathType Leaf) -and $GccCmd -and $GxxCmd) {
+            $BuildTemp = Join-Path ([IO.Path]::GetTempPath()) ("mac-mirror-build-{0}" -f [Guid]::NewGuid().ToString("N"))
+            New-Item -ItemType Directory -Path $BuildTemp -Force | Out-Null
+            try {
+                $MinizObj = Join-Path $BuildTemp "miniz.o"
+                $BuiltExe = Join-Path $BuildTemp "mac-mirror-viewer.exe"
+                & $GccCmd.Source -O2 -c (Join-Path $ViewerSrcRoot "core_client\miniz.c") -o $MinizObj
+                if ($LASTEXITCODE -eq 0) {
+                    $CppFiles = @(
+                        (Get-ChildItem -LiteralPath (Join-Path $ViewerSrcRoot "core_client") -Filter "*.cpp" -File | Select-Object -ExpandProperty FullName),
+                        (Get-ChildItem -LiteralPath (Join-Path $ViewerSrcRoot "win_ui") -Filter "*.cpp" -File | Select-Object -ExpandProperty FullName)
+                    ) | ForEach-Object { $_ }
+                    & $GxxCmd.Source -std=c++17 -O2 `
+                        -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX -D_WIN32_WINNT=0x0A00 `
+                        "-I$(Join-Path $ViewerSrcRoot 'include')" `
+                        "-I$(Join-Path $ViewerSrcRoot 'core_client')" `
+                        "-I$(Join-Path $ViewerSrcRoot 'win_ui')" `
+                        @CppFiles $MinizObj `
+                        -mwindows -static -static-libgcc -static-libstdc++ -s `
+                        -ld3d11 -ldxgi -ld2d1 -ldwrite -lws2_32 -lbcrypt -ldwmapi -limm32 -lole32 -lshell32 -lgdi32 -luser32 -luuid `
+                        -o $BuiltExe
+                    if ($LASTEXITCODE -eq 0 -and (Test-PeExecutable -Path $BuiltExe -MinBytes 262144)) {
+                        Move-Item -LiteralPath $BuiltExe -Destination $Executable -Force
+                        Add-UserPathEntry -Directory $InstallDir
+                        Write-Host "Mac Mirror Viewer built from local C++17 source: $Executable" -ForegroundColor DarkGray
+                        return $true
+                    }
+                }
+            }
+            catch {
+                Write-Warning "Local Mac Mirror Viewer build skipped: $_"
+            }
+            finally {
+                if (Test-Path -LiteralPath $BuildTemp) {
+                    Remove-Item -LiteralPath $BuildTemp -Recurse -Force
+                }
+            }
+        }
+    }
+
+    Write-Host "Mac Mirror Viewer binary not available yet; falling back to TigerVNC Viewer 1.16.2." -ForegroundColor Yellow
+    return $false
+}
+
+function Install-TigerVncViewer {
+    $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\tigervnc"
+    $Executable = Join-Path $InstallDir "vncviewer.exe"
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+    if (Test-PeExecutable -Path $Executable) {
+        Add-UserPathEntry -Directory $InstallDir
+        Write-Host "TigerVNC Viewer is already installed: $Executable" -ForegroundColor DarkGray
+        return
+    }
+
+    Enable-Tls12
+    $DownloadPath = Join-Path $InstallDir ("vncviewer-{0}.exe" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        Invoke-WebRequest `
+            -Uri $TigerVncViewerUrl `
+            -UseBasicParsing `
+            -UserAgent "curl/8.0" `
+            -MaximumRedirection 10 `
+            -OutFile $DownloadPath
+        if (!(Test-PeExecutable -Path $DownloadPath)) {
+            throw "The downloaded TigerVNC Viewer file is not a valid Windows executable. Check $TigerVncViewerUrl."
+        }
+        Move-Item -LiteralPath $DownloadPath -Destination $Executable -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $DownloadPath) {
+            Remove-Item -LiteralPath $DownloadPath -Force
+        }
+    }
+
+    Add-UserPathEntry -Directory $InstallDir
+    Write-Host "TigerVNC Viewer 1.16.2 installed: $Executable" -ForegroundColor DarkGray
+}
+
+function Install-MacMirrorTool {
+    $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\mac-mirror"
+    $TargetScript = Join-Path $InstallDir "mac_vnc_tunnel.py"
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+    $LocalScript = $null
+    if (![string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $Candidate = Join-Path $PSScriptRoot "mac_vnc_tunnel.py"
+        if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+            $LocalScript = $Candidate
+        }
+    }
+
+    if ($LocalScript) {
+        Copy-Item -LiteralPath $LocalScript -Destination $TargetScript -Force
+        Write-Host "Mac VNC tunnel helper installed from local repo: $TargetScript" -ForegroundColor DarkGray
+    }
+    else {
+        Enable-Tls12
+        $DownloadPath = Join-Path $InstallDir ("mac_vnc_tunnel-{0}.py" -f [Guid]::NewGuid().ToString("N"))
+        try {
+            Invoke-WebRequest `
+                -Uri $MacMirrorTunnelUrl `
+                -UseBasicParsing `
+                -OutFile $DownloadPath
+            $ScriptText = [IO.File]::ReadAllText($DownloadPath, [Text.Encoding]::UTF8)
+            if ([string]::IsNullOrWhiteSpace($ScriptText) -or !$ScriptText.Contains("def socks5_connect(")) {
+                throw "The downloaded mac_vnc_tunnel.py file failed validation."
+            }
+            Move-Item -LiteralPath $DownloadPath -Destination $TargetScript -Force
+        }
+        finally {
+            if (Test-Path -LiteralPath $DownloadPath) {
+                Remove-Item -LiteralPath $DownloadPath -Force
+            }
+        }
+        Write-Host "Mac VNC tunnel helper installed: $TargetScript" -ForegroundColor DarkGray
+    }
+
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $ConnectCmd = "@echo off`r`nsetlocal`r`nset `"PYTHON_EXE=%USERPROFILE%\scoop\shims\python.exe`"`r`nif not exist `"%PYTHON_EXE%`" set `"PYTHON_EXE=python`"`r`n`"%PYTHON_EXE%`" `"%~dp0mac_vnc_tunnel.py`" --connect %*`r`n"
+    $StopCmd = "@echo off`r`nsetlocal`r`nset `"PYTHON_EXE=%USERPROFILE%\scoop\shims\python.exe`"`r`nif not exist `"%PYTHON_EXE%`" set `"PYTHON_EXE=python`"`r`n`"%PYTHON_EXE%`" `"%~dp0mac_vnc_tunnel.py`" --stop %*`r`n"
+    [IO.File]::WriteAllText((Join-Path $InstallDir "mac-mirror.cmd"), $ConnectCmd, $Utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $InstallDir "mac-mirror-stop.cmd"), $StopCmd, $Utf8NoBom)
+
+    Add-UserPathEntry -Directory $InstallDir
 }
 
 Write-Host "`nPreparing personal Windows development environment..." -ForegroundColor Cyan
@@ -371,12 +694,26 @@ Invoke-Step "Installing PSReadLine history predictions..." {
     }
 }
 
-Invoke-Step "Configuring PowerShell completion, prompt, and mac shortcut..." {
-    Set-PersonalPowerShellProfile
-}
-
 Invoke-Step "Installing Microsoft Dev Tunnel CLI for the current user..." {
     Install-DevTunnel
+}
+
+Invoke-Step "Installing Tailscale userspace CLI (no admin rights required)..." {
+    Install-TailscaleUserspace
+}
+
+Invoke-Step "Installing Mac Mirror Viewer (with TigerVNC 1.16.2 fallback)..." {
+    if (!(Install-MacMirrorViewer)) {
+        Install-TigerVncViewer
+    }
+}
+
+Invoke-Step "Installing Mac VNC tunnel & launcher helper (mac_vnc_tunnel.py)..." {
+    Install-MacMirrorTool
+}
+
+Invoke-Step "Configuring PowerShell completion, prompt, and mac shortcuts..." {
+    Set-PersonalPowerShellProfile
 }
 
 Invoke-Step "Adding Scoop extras bucket..." {
@@ -425,8 +762,31 @@ Invoke-Step "Installing Windows Local Auth Cleaner v0.2.0 from GitHub Release...
     }
 }
 
+if (!$SkipMacMirror) {
+    Invoke-Step "Starting Tailscale userspace daemon and connecting Mac screen mirroring..." {
+        $MirrorArgs = @()
+        if (![string]::IsNullOrWhiteSpace($MacHost)) {
+            $MirrorArgs += @("--host", $MacHost)
+        }
+        if (![string]::IsNullOrWhiteSpace($TailscaleAuthKey)) {
+            $MirrorArgs += @("--auth-key", $TailscaleAuthKey)
+        }
+        try {
+            mac-mirror @MirrorArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Mac screen mirroring did not finish connecting (exit code $LASTEXITCODE). Run 'mac-mirror' once Tailscale sign-in and Mac share acceptance are ready."
+            }
+        }
+        catch {
+            Write-Warning "Mac screen mirroring setup warning: $_"
+            Write-Warning "All tools are installed. Run 'mac-mirror' whenever you are ready to connect."
+        }
+    }
+}
+
 Write-Host "`nPersonal Windows development environment configured successfully." -ForegroundColor Green
 Write-Host "Installed with Scoop in the current user account." -ForegroundColor Green
 Write-Host "PowerToys was installed from the Scoop extras bucket for 64-bit Windows." -ForegroundColor Green
 Write-Host "PowerShell profiles saved for Windows PowerShell and PowerShell 7. Open a new shell to load all settings." -ForegroundColor Green
+Write-Host "Mac screen mirroring shortcut: mac-mirror (stop & sign out before leaving: mac-mirror-stop --logout)." -ForegroundColor Green
 Write-Host "Mac SSH shortcut: mac (connect Dev Tunnel first). Run wac before leaving to remove managed profile settings." -ForegroundColor Green

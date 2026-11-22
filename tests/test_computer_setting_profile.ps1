@@ -7,7 +7,9 @@ if ($ParseErrors.Count) { throw ($ParseErrors | Out-String) }
 $Definition = $Ast.Find({ param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Set-PersonalPowerShellProfile' }, $true)
 $FixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $FixtureRoot | Out-Null
+$OriginalUserProfile = $env:USERPROFILE
 try {
+    $env:USERPROFILE = $FixtureRoot
     # Extract only the profile function; never execute installs or touch real profiles.
     $FunctionText = $Definition.Extent.Text.Replace("[Environment]::GetFolderPath('MyDocuments')", "'" + $FixtureRoot.Replace("'", "''") + "'")
     . ([scriptblock]::Create($FunctionText))
@@ -27,6 +29,7 @@ try {
         }
     }
     function ssh { $script:SshArguments = @($args) }
+    function python { $script:PythonArguments = @($args) }
     Set-PersonalPowerShellProfile
     $First = [IO.File]::ReadAllText($ProfilePath)
     Set-PersonalPowerShellProfile
@@ -37,17 +40,27 @@ try {
         $Text = [IO.File]::ReadAllText((Join-Path $FixtureRoot "$Edition\profile.ps1"))
         if ([regex]::Matches($Text, '# BEGIN study_package PowerShell settings').Count -ne 1) { throw 'Expected exactly one managed block.' }
         if (!$Text.Contains('Set-PSReadLineOption -PredictionSource History')) { throw 'History predictions missing.' }
+        if (!$Text.Contains('function global:mac-mirror')) { throw 'mac-mirror shortcut missing.' }
+        if (!$Text.Contains('function global:mac-mirror-stop')) { throw 'mac-mirror-stop shortcut missing.' }
     }
     mac -p 2222
     if (($script:SshArguments -join '|') -ne '-o|PubkeyAuthentication=no|taeyoung@127.0.0.1|-p|2222') { throw 'Global mac did not forward SSH arguments.' }
+    $ExpectedTunnel = Join-Path $env:LOCALAPPDATA 'Programs\mac-mirror\mac_vnc_tunnel.py'
+    mac-mirror --host 100.80.74.94
+    if (($script:PythonArguments -join '|') -ne "$ExpectedTunnel|--connect|--host|100.80.74.94") { throw 'Global mac-mirror did not forward arguments.' }
+    mac-mirror-stop --logout
+    if (($script:PythonArguments -join '|') -ne "$ExpectedTunnel|--stop|--logout") { throw 'Global mac-mirror-stop did not forward arguments.' }
     [IO.File]::AppendAllText($ProfilePath, '# BEGIN study_package PowerShell settings')
     $Malformed = [IO.File]::ReadAllText($ProfilePath)
     $Refused = $false
     try { Set-PersonalPowerShellProfile } catch { $Refused = $true }
     if (!$Refused -or [IO.File]::ReadAllText($ProfilePath) -cne $Malformed) { throw 'Malformed profile must be left unchanged.' }
-    Write-Host 'PowerShell parse, profile persistence, idempotence, and global mac tests passed.'
+    Write-Host 'PowerShell parse, profile persistence, idempotence, and global mac/mac-mirror tests passed.'
 }
 finally {
+    $env:USERPROFILE = $OriginalUserProfile
     Remove-Item -LiteralPath $FixtureRoot -Recurse -Force
     Remove-Item Function:\mac -ErrorAction SilentlyContinue
+    Remove-Item Function:\mac-mirror -ErrorAction SilentlyContinue
+    Remove-Item Function:\mac-mirror-stop -ErrorAction SilentlyContinue
 }
