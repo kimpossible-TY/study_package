@@ -618,7 +618,9 @@ class PeerResolutionAndOrchestrationTests(unittest.TestCase):
 
 class BootstrapScriptContractTests(unittest.TestCase):
     def test_computer_setting_contains_expected_mirroring_setup(self) -> None:
-        script = (REPO_ROOT / "computer_setting.ps1").read_text(encoding="utf-8")
+        raw_bytes = (REPO_ROOT / "computer_setting.ps1").read_bytes()
+        self.assertFalse(raw_bytes.startswith(b"\xef\xbb\xbf"), "UTF-8 BOM breaks irm | iex")
+        script = raw_bytes.decode("utf-8")
         self.assertIn("mac-mirror-viewer.exe", script)
         self.assertIn("function Install-MacMirrorViewer", script)
         self.assertIn(
