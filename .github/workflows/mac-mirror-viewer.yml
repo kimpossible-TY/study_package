@@ -110,11 +110,16 @@ jobs:
             }
           }
 
-          $helpOut = & ".\$exe" --help 2>&1
-          $code = $LASTEXITCODE
-          $helpJoined = ($helpOut | Out-String)
+          $helpFile = Join-Path $env:RUNNER_TEMP "mac-mirror-help.txt"
+          $errFile = Join-Path $env:RUNNER_TEMP "mac-mirror-err.txt"
+          $proc = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList "--help" -Wait -PassThru -RedirectStandardOutput $helpFile -RedirectStandardError $errFile
+          $code = $proc.ExitCode
+          $helpJoined = if (Test-Path $helpFile) { Get-Content $helpFile -Raw } else { "" }
+          $errJoined = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { "" }
+          Remove-Item $helpFile, $errFile -Force -ErrorAction SilentlyContinue
           Write-Host "Smoke test exit code: $code (0x$($code.ToString('X8')))"
           Write-Host $helpJoined
+          if ($errJoined) { Write-Host "Stderr: $errJoined" }
           if ($code -ne 0) { throw "mac-mirror-viewer.exe --help failed with exit code $code." }
           if ($helpJoined -notmatch "--socks5") { throw "Expected --socks5 option in --help output." }
 
