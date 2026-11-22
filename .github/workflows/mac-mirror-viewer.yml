@@ -43,19 +43,29 @@ jobs:
 
       - name: Ensure MinGW-w64 x86_64 toolchain
         run: |
-          $mingwBin = "C:\msys64\mingw64\bin"
-          if (!(Test-Path (Join-Path $mingwBin "g++.exe"))) {
+          $candidates = @("C:\msys64\ucrt64\bin", "C:\msys64\mingw64\bin")
+          $mingwBin = $null
+          foreach ($dir in $candidates) {
+            if ((Test-Path (Join-Path $dir "g++.exe")) -and (Test-Path (Join-Path $dir "mingw32-make.exe"))) {
+              $mingwBin = $dir
+              break
+            }
+          }
+          if (!$mingwBin) {
             choco install mingw --no-progress -y
             $mingwBin = "C:\ProgramData\mingw64\mingw64\bin"
           }
           "$mingwBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "MINGW_BIN=$mingwBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build standalone mac-mirror-viewer.exe
         run: |
+          $cc = (Join-Path $env:MINGW_BIN "gcc.exe").Replace('\', '/')
+          $cxx = (Join-Path $env:MINGW_BIN "g++.exe").Replace('\', '/')
           cmake -G "MinGW Makefiles" -S mac_mirror_viewer -B mac_mirror_viewer/build `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=gcc.exe `
-            -DCMAKE_CXX_COMPILER=g++.exe
+            "-DCMAKE_C_COMPILER=$cc" `
+            "-DCMAKE_CXX_COMPILER=$cxx"
           if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
           cmake --build mac_mirror_viewer/build -j 4
           if ($LASTEXITCODE -ne 0) { throw "CMake build failed." }
@@ -68,16 +78,14 @@ jobs:
           $exe = "mac_mirror_viewer/build/mac-mirror-viewer.exe"
           if (!(Test-Path $exe)) { throw "mac-mirror-viewer.exe was not produced." }
 
-          $helpText = & ./$exe --help
-          if ($LASTEXITCODE -ne 0) { throw "mac-mirror-viewer.exe --help failed." }
-          if (($helpText -join "`n") -notmatch "--socks5") { throw "Expected --socks5 option in --help output." }
-
-          $dump = & objdump.exe -p $exe
+          $objdump = Join-Path $env:MINGW_BIN "objdump.exe"
+          $dump = & $objdump -p $exe
           $dlls = @(
             $dump |
               Select-String -Pattern "DLL Name:\s*(\S+)" |
               ForEach-Object { $_.Matches[0].Groups[1].Value.ToLowerInvariant() }
           )
+          Write-Host "Imported DLLs: $($dlls -join ', ')"
           $allowed = @(
             "advapi32.dll",
             "bcrypt.dll",
@@ -101,6 +109,14 @@ jobs:
               throw "Unexpected non-system DLL dependency: $dll"
             }
           }
+
+          $helpOut = & ".\$exe" --help 2>&1
+          $code = $LASTEXITCODE
+          $helpJoined = ($helpOut | Out-String)
+          Write-Host "Smoke test exit code: $code (0x$($code.ToString('X8')))"
+          Write-Host $helpJoined
+          if ($code -ne 0) { throw "mac-mirror-viewer.exe --help failed with exit code $code." }
+          if ($helpJoined -notmatch "--socks5") { throw "Expected --socks5 option in --help output." }
 
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  mac-mirror-viewer.exe" | Set-Content "$exe.sha256" -Encoding ascii
