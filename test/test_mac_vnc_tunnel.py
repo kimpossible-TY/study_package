@@ -635,7 +635,8 @@ class BootstrapScriptContractTests(unittest.TestCase):
 
         workflow = (REPO_ROOT / ".github" / "workflows" / "mac-mirror-viewer.yml").read_text(encoding="utf-8")
         self.assertIn("mac-mirror-viewer.exe", workflow)
-        self.assertIn("objdump.exe -p", workflow)
+        self.assertIn("objdump.exe", workflow)
+        self.assertIn("-p $exe", workflow)
 
 
 if __name__ == "__main__":
