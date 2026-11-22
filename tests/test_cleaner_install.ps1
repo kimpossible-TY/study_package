@@ -37,7 +37,10 @@ try {
     if (($env:Path -split [IO.Path]::PathSeparator)[0] -ne $InstallDir) { throw 'New installation must precede stale Scoop shims.' }
     $DownloadsExe = Join-Path $Root 'Downloads\windows-local-auth-cleaner.exe'
     if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($DownloadsExe)) -ne $Expected) { throw 'Downloads copy missing.' }
+    $BeforeReinstallCount = $global:CleanerTestRequestedUrls.Count
     & $FixtureInstaller -Tag v0.3.0 -InstallDir $InstallDir
+    $ReinstallUrls = @($global:CleanerTestRequestedUrls | Select-Object -Skip $BeforeReinstallCount)
+    if (@($ReinstallUrls | Where-Object { !$_.EndsWith('.sha256') }).Count -ne 0) { throw 'Duplicate executable download occurred when checksum already matched.' }
     if (@($global:CleanerTestFixtureUserPath -split [IO.Path]::PathSeparator | Where-Object { $_ -eq $InstallDir }).Count -ne 1) { throw 'PATH entry duplicated.' }
     $global:CleanerTestBadChecksum = $true
     $global:CleanerTestPayload = [Text.Encoding]::ASCII.GetBytes('bad update')

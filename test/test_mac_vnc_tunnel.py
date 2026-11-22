@@ -634,6 +634,9 @@ class BootstrapScriptContractTests(unittest.TestCase):
         self.assertIn("function global:mac-mirror", script)
         self.assertIn("function global:mac-mirror-stop", script)
         self.assertIn("mac_vnc_tunnel.py", script)
+        self.assertIn("[switch]$Update", script)
+        self.assertIn("skipping download", script)
+        self.assertIn("skipping scoop update", script)
 
         workflow = (REPO_ROOT / ".github" / "workflows" / "mac-mirror-viewer.yml").read_text(encoding="utf-8")
         self.assertIn("mac-mirror-viewer.exe", workflow)

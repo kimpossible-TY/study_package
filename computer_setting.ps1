@@ -5,6 +5,7 @@
 
 param(
     [switch]$SkipMacMirror,
+    [switch]$Update,
     [string]$MacHost,
     [string]$TailscaleAuthKey
 )
@@ -316,12 +317,18 @@ function Invoke-Step {
     & $ScriptBlock
 }
 
-function Install-ScoopPackage {
+function Test-ScoopPackageInstalled {
     param([Parameter(Mandatory = $true)][string]$Name)
 
     $null = scoop prefix $Name 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Already installed: $Name" -ForegroundColor DarkGray
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-ScoopPackage {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    if (Test-ScoopPackageInstalled $Name) {
+        Write-Host "Already installed (skipping download): $Name" -ForegroundColor DarkGray
         return
     }
 
@@ -333,29 +340,34 @@ function Install-DevTunnel {
     $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\devtunnel"
     $Executable = Join-Path $InstallDir "devtunnel.exe"
     if ((Test-Command "devtunnel") -and !(Test-Path -LiteralPath $Executable -PathType Leaf)) {
-        Write-Host "Dev Tunnel CLI is already available." -ForegroundColor DarkGray
+        Write-Host "Dev Tunnel CLI is already available (skipping download)." -ForegroundColor DarkGray
         return
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-    if (!(Test-Path -LiteralPath $Executable -PathType Leaf)) {
-        $DownloadPath = Join-Path $InstallDir ("devtunnel-{0}.exe" -f [Guid]::NewGuid().ToString("N"))
-        try {
-            Invoke-WebRequest `
-                -Uri "https://aka.ms/TunnelsCliDownload/win-x64" `
-                -UseBasicParsing `
-                -OutFile $DownloadPath
-            & $DownloadPath --version
-            if ($LASTEXITCODE -ne 0) {
-                throw "The downloaded Dev Tunnel CLI could not be started."
-            }
-            Move-Item -LiteralPath $DownloadPath -Destination $Executable -Force
+    if ((Test-Path -LiteralPath $Executable -PathType Leaf) -and !$Update) {
+        Add-UserPathEntry -Directory $InstallDir
+        Write-Host "Dev Tunnel CLI is already installed (skipping download): $Executable" -ForegroundColor DarkGray
+        return
+    }
+
+    $DownloadPath = Join-Path $InstallDir ("devtunnel-{0}.exe" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        Enable-Tls12
+        Invoke-WebRequest `
+            -Uri "https://aka.ms/TunnelsCliDownload/win-x64" `
+            -UseBasicParsing `
+            -OutFile $DownloadPath
+        & $DownloadPath --version
+        if ($LASTEXITCODE -ne 0) {
+            throw "The downloaded Dev Tunnel CLI could not be started."
         }
-        finally {
-            if (Test-Path -LiteralPath $DownloadPath) {
-                Remove-Item -LiteralPath $DownloadPath -Force
-            }
+        Move-Item -LiteralPath $DownloadPath -Destination $Executable -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $DownloadPath) {
+            Remove-Item -LiteralPath $DownloadPath -Force
         }
     }
 
@@ -374,9 +386,9 @@ function Install-TailscaleUserspace {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 
-    if ((Test-Path -LiteralPath $TailscaleExe -PathType Leaf) -and (Test-Path -LiteralPath $TailscaledExe -PathType Leaf)) {
+    if ((Test-Path -LiteralPath $TailscaleExe -PathType Leaf) -and (Test-Path -LiteralPath $TailscaledExe -PathType Leaf) -and !$Update) {
         Add-UserPathEntry -Directory $InstallDir
-        Write-Host "Tailscale userspace binaries are already installed: $InstallDir" -ForegroundColor DarkGray
+        Write-Host "Tailscale userspace binaries are already installed (skipping download): $InstallDir" -ForegroundColor DarkGray
         return
     }
 
@@ -598,8 +610,18 @@ function Install-MacMirrorTool {
     }
 
     if ($LocalScript) {
-        Copy-Item -LiteralPath $LocalScript -Destination $TargetScript -Force
-        Write-Host "Mac VNC tunnel helper installed from local repo: $TargetScript" -ForegroundColor DarkGray
+        $SameLocal = (Test-Path -LiteralPath $TargetScript -PathType Leaf) -and
+            ((Get-FileHash -LiteralPath $LocalScript -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $TargetScript -Algorithm SHA256).Hash)
+        if ($SameLocal) {
+            Write-Host "Mac VNC tunnel helper is already up to date: $TargetScript" -ForegroundColor DarkGray
+        }
+        else {
+            Copy-Item -LiteralPath $LocalScript -Destination $TargetScript -Force
+            Write-Host "Mac VNC tunnel helper installed from local repo: $TargetScript" -ForegroundColor DarkGray
+        }
+    }
+    elseif ((Test-Path -LiteralPath $TargetScript -PathType Leaf) -and !$Update -and ([IO.File]::ReadAllText($TargetScript, [Text.Encoding]::UTF8).Contains("def socks5_connect("))) {
+        Write-Host "Mac VNC tunnel helper is already installed (skipping download): $TargetScript" -ForegroundColor DarkGray
     }
     else {
         Enable-Tls12
@@ -672,8 +694,13 @@ Invoke-Step "Configuring VS Code Git path..." {
 }
 
 Invoke-Step "Updating Scoop..." {
-    if (Test-ScoopBucketsClean) {
+    $AllScoopPackages = @("git") + $ScoopPackages + $ExtraPackages
+    $MissingScoopPackages = @($AllScoopPackages | Where-Object { !(Test-ScoopPackageInstalled $_) })
+    if (($MissingScoopPackages.Count -gt 0 -or $Update) -and (Test-ScoopBucketsClean)) {
         scoop update
+    }
+    elseif ($MissingScoopPackages.Count -eq 0) {
+        Write-Host "All Scoop packages are already installed (skipping scoop update)." -ForegroundColor DarkGray
     }
 }
 
@@ -765,14 +792,58 @@ Invoke-Step "Preparing Neovim configuration folder..." {
 Invoke-Step "Installing Windows Local Auth Cleaner v0.3.0 from GitHub Release..." {
     $CleanerReleaseTag = 'v0.3.0'
     $ReleaseBase = "https://github.com/kimpossible-TY/study_package/releases/download/$CleanerReleaseTag"
-    $InstallerPath = Join-Path ([IO.Path]::GetTempPath()) ("windows-auth-cleaner-install-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
-    try {
-        Invoke-WebRequest -Uri "$ReleaseBase/install.ps1" -OutFile $InstallerPath -UseBasicParsing
-        & $InstallerPath -Tag $CleanerReleaseTag
+    $CleanerDir = Join-Path $env:LOCALAPPDATA "Programs\windows-local-auth-cleaner"
+    $CleanerExe = Join-Path $CleanerDir "windows-local-auth-cleaner.exe"
+    $CleanerShim = Join-Path $CleanerDir "wac.cmd"
+    $DownloadsCleanerExe = Join-Path $env:USERPROFILE "Downloads\windows-local-auth-cleaner.exe"
+
+    $NeedsInstall = $true
+    if ((Test-Path -LiteralPath $CleanerExe -PathType Leaf) -and (Test-Path -LiteralPath $CleanerShim -PathType Leaf) -and !$Update) {
+        try {
+            Enable-Tls12
+            $ShaText = Invoke-RestMethod -Uri "$ReleaseBase/windows-local-auth-cleaner.exe.sha256" -UseBasicParsing
+            if ($ShaText -match '([0-9a-fA-F]{64})') {
+                $ExpectedHash = $Matches[1].ToLowerInvariant()
+                $LocalHash = (Get-FileHash -LiteralPath $CleanerExe -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($LocalHash -eq $ExpectedHash) {
+                    $NeedsInstall = $false
+                    Add-UserPathEntry -Directory $CleanerDir
+                    if (!(Test-Path -LiteralPath $DownloadsCleanerExe -PathType Leaf) -or ((Get-FileHash -LiteralPath $DownloadsCleanerExe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $LocalHash)) {
+                        New-Item -ItemType Directory -Path (Split-Path -Parent $DownloadsCleanerExe) -Force | Out-Null
+                        Copy-Item -LiteralPath $CleanerExe -Destination $DownloadsCleanerExe -Force
+                    }
+                    Write-Host "Windows Local Auth Cleaner $CleanerReleaseTag is already up to date (skipping download): $CleanerExe" -ForegroundColor DarkGray
+                }
+            }
+        }
+        catch {
+            Write-Host "Checksum check skipped ($($_.Exception.Message))." -ForegroundColor DarkGray
+        }
     }
-    finally {
-        if (Test-Path -LiteralPath $InstallerPath) {
-            Remove-Item -LiteralPath $InstallerPath -Force
+
+    if ($NeedsInstall) {
+        $LocalInstaller = $null
+        if (![string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+            $CandidateInstaller = Join-Path $PSScriptRoot "windows_local_auth_cleaner\install.ps1"
+            if (Test-Path -LiteralPath $CandidateInstaller -PathType Leaf) {
+                $LocalInstaller = $CandidateInstaller
+            }
+        }
+
+        if ($LocalInstaller) {
+            & $LocalInstaller -Tag $CleanerReleaseTag
+        }
+        else {
+            $InstallerPath = Join-Path ([IO.Path]::GetTempPath()) ("windows-auth-cleaner-install-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+            try {
+                Invoke-WebRequest -Uri "$ReleaseBase/install.ps1" -OutFile $InstallerPath -UseBasicParsing
+                & $InstallerPath -Tag $CleanerReleaseTag
+            }
+            finally {
+                if (Test-Path -LiteralPath $InstallerPath) {
+                    Remove-Item -LiteralPath $InstallerPath -Force
+                }
+            }
         }
     }
 }

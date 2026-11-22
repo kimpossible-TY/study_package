@@ -95,23 +95,36 @@ if (!(Test-Path -LiteralPath $InstallDir)) {
 $ExePath = Join-Path $InstallDir $BinaryName
 $AliasPath = Join-Path $InstallDir $AliasName
 
-Write-Host "Downloading $BinaryName from $DownloadUrl..." -ForegroundColor DarkGray
+Write-Host "Checking release checksum from $DownloadUrl.sha256..." -ForegroundColor DarkGray
 $TemporaryExe = Join-Path $InstallDir ("download-{0}.exe" -f [Guid]::NewGuid().ToString('N'))
 $TemporaryChecksum = "$TemporaryExe.sha256"
+$AlreadyUpToDate = $false
 try {
     # Use TLS 1.2+
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TemporaryExe -UseBasicParsing
     Invoke-WebRequest -Uri "$DownloadUrl.sha256" -OutFile $TemporaryChecksum -UseBasicParsing
     $ChecksumText = Get-Content -LiteralPath $TemporaryChecksum -Raw
     if ($ChecksumText -notmatch '^\s*([A-Fa-f0-9]{64})\s+\*?windows-local-auth-cleaner\.exe\s*$') {
         throw 'The release checksum file has an invalid format.'
     }
-    $ExpectedHash = $Matches[1]
-    if ((Get-FileHash -LiteralPath $TemporaryExe -Algorithm SHA256).Hash -ne $ExpectedHash) {
-        throw 'Release SHA-256 verification failed. The existing executable was not replaced.'
+    $ExpectedHash = $Matches[1].ToLowerInvariant()
+
+    if (Test-Path -LiteralPath $ExePath -PathType Leaf) {
+        $CurrentHash = (Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($CurrentHash -eq $ExpectedHash) {
+            $AlreadyUpToDate = $true
+            Write-Host "$BinaryName is already up to date ($Tag); skipping download." -ForegroundColor DarkGray
+        }
     }
-    Move-Item -LiteralPath $TemporaryExe -Destination $ExePath -Force
+
+    if (!$AlreadyUpToDate) {
+        Write-Host "Downloading $BinaryName from $DownloadUrl..." -ForegroundColor DarkGray
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $TemporaryExe -UseBasicParsing
+        if ((Get-FileHash -LiteralPath $TemporaryExe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $ExpectedHash) {
+            throw 'Release SHA-256 verification failed. The existing executable was not replaced.'
+        }
+        Move-Item -LiteralPath $TemporaryExe -Destination $ExePath -Force
+    }
 }
 finally {
     if (Test-Path -LiteralPath $TemporaryExe) {
@@ -138,7 +151,11 @@ Update-SessionPath $InstallDir
 # Keep a convenient copy in Downloads. PATH takes precedence over old Scoop shims.
 $DownloadsDir = Join-Path $env:USERPROFILE 'Downloads'
 New-Item -ItemType Directory -Path $DownloadsDir -Force | Out-Null
-Copy-Item -LiteralPath $ExePath -Destination (Join-Path $DownloadsDir $BinaryName) -Force
+$DownloadsExe = Join-Path $DownloadsDir $BinaryName
+$ExeHash = (Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash.ToLowerInvariant()
+if (!(Test-Path -LiteralPath $DownloadsExe -PathType Leaf) -or ((Get-FileHash -LiteralPath $DownloadsExe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $ExeHash)) {
+    Copy-Item -LiteralPath $ExePath -Destination $DownloadsExe -Force
+}
 
 Write-Host "`n✓ Windows Local Auth Cleaner installed successfully!" -ForegroundColor Green
 Write-Host "Location: $ExePath" -ForegroundColor DarkGray
