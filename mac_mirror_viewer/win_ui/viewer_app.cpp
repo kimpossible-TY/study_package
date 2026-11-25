@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+
+#include "clipboard_text.h"
 
 namespace mac_mirror {
 
@@ -29,6 +32,26 @@ std::string WideToUtf8String(const std::wstring& w) {
     WideCharToMultiByte(
         CP_UTF8, 0, w.data(), static_cast<int>(w.size()), &out[0], len, nullptr, nullptr);
     return out;
+}
+
+// Decodes RFB ServerCutText bytes as UTF-8 (macOS screensharingd) with automatic
+// ISO-8859-1 fallback for legacy RFB servers.
+std::wstring DecodeRfbCutTextToWide(const std::string& raw) {
+    if (raw.empty()) return std::wstring();
+    int len = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, raw.data(), static_cast<int>(raw.size()), nullptr, 0);
+    if (len > 0) {
+        std::wstring out(static_cast<size_t>(len), L'\0');
+        MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, raw.data(), static_cast<int>(raw.size()), &out[0], len);
+        return out;
+    }
+    std::wstring latin1;
+    latin1.reserve(raw.size());
+    for (char ch : raw) {
+        latin1.push_back(static_cast<wchar_t>(static_cast<uint8_t>(ch)));
+    }
+    return latin1;
 }
 
 void EnableDarkTitleBar(HWND hwnd) {
@@ -52,6 +75,7 @@ ViewerApp::ViewerApp(AppOptions options) : options_(std::move(options)) {
         modal_username_ = options_.auto_user;
     }
     show_advanced_settings_ = options_.show_settings;
+    key_mapper_.SetSwapCtrlCmd(options_.prefs.swap_ctrl_cmd);
     if (options_.show_hud) {
         hud_wanted_ = true;
         hud_pinned_by_hotkey_ = true;
@@ -64,6 +88,12 @@ ViewerApp::~ViewerApp() {
     renderer_.Shutdown();
     SecureWipeString(&modal_username_);
     SecureWipeString(&modal_password_);
+    SecureWipeString(&last_synced_clipboard_utf8_);
+    {
+        std::lock_guard<std::mutex> lk(clipboard_mutex_);
+        SecureWipeString(&pending_server_clipboard_);
+        has_pending_server_clipboard_ = false;
+    }
     oneshot_creds_.Wipe();
     auth_response_.Wipe();
 }
@@ -152,6 +182,8 @@ bool ViewerApp::CreateMainWindow(HINSTANCE hinstance) {
     // Disable Windows Korean/CJK IME interception so passwords & remote macOS shortcuts work cleanly.
     ImmAssociateContext(hwnd_, nullptr);
     EnableDarkTitleBar(hwnd_);
+    clipboard_listener_registered_ = (AddClipboardFormatListener(hwnd_) != FALSE);
+    last_observed_clipboard_seq_ = GetClipboardSequenceNumber();
 
     dpi_scale_ = QueryWindowDpiScale(hwnd_);
 
@@ -265,8 +297,181 @@ void ViewerApp::CycleQualityMode() {
     needs_render_ = true;
 }
 
+void ViewerApp::ToggleSwapCtrlCmd() {
+    if (session_) {
+        key_mapper_.ReleaseAll(session_.get());
+    }
+    options_.prefs.swap_ctrl_cmd = !options_.prefs.swap_ctrl_cmd;
+    key_mapper_.SetSwapCtrlCmd(options_.prefs.swap_ctrl_cmd);
+    PersistUiPrefs();
+
+    if (!show_modal_) {
+        hud_wanted_ = true;
+        hud_last_active_ms_ = NowMs();
+        hud_peek_duration_ms_ = 1500;
+    }
+    needs_render_ = true;
+}
+
 void ViewerApp::PersistUiPrefs() {
     SaveUiPrefsToDisk(options_.prefs);
+}
+
+void ViewerApp::SyncLocalClipboardToRemote(bool force) {
+    if (!hwnd_ || !session_ || show_modal_ || session_->GetState() != SessionState::Connected) {
+        return;
+    }
+
+    const DWORD seq = GetClipboardSequenceNumber();
+    if (has_written_remote_clipboard_ && seq == last_written_clipboard_seq_) {
+        last_observed_clipboard_seq_ = seq;
+        return;
+    }
+    if (!force && seq == last_observed_clipboard_seq_) {
+        return;
+    }
+    if (has_modal_pasted_clipboard_ && seq == modal_pasted_clipboard_seq_) {
+        last_observed_clipboard_seq_ = seq;
+        return;
+    }
+
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+        last_observed_clipboard_seq_ = seq;
+        return;
+    }
+    if (!OpenClipboard(hwnd_)) {
+        return;
+    }
+
+    std::wstring wide_text;
+    HANDLE hdata = GetClipboardData(CF_UNICODETEXT);
+    if (hdata) {
+        const wchar_t* wptr = static_cast<const wchar_t*>(GlobalLock(hdata));
+        if (wptr) {
+            constexpr size_t kMaxWideChars = 512u * 1024u;
+            size_t n = wcsnlen(wptr, kMaxWideChars);
+            wide_text.assign(wptr, n);
+            GlobalUnlock(hdata);
+        }
+    }
+    CloseClipboard();
+
+    last_observed_clipboard_seq_ = seq;
+    if (wide_text.empty()) {
+        return;
+    }
+
+    std::string utf8 = NormalizeLineEndingsToLf(WideToUtf8String(wide_text));
+    if (utf8.empty() || utf8.size() > 1024u * 1024u) {
+        return;
+    }
+    if (!force && utf8 == last_synced_clipboard_utf8_) {
+        return;
+    }
+
+    last_synced_clipboard_utf8_ = utf8;
+    has_written_remote_clipboard_ = false;
+    session_->SendClientCutText(utf8);
+}
+
+bool ViewerApp::TryWriteWindowsClipboardText(const std::wstring& wide_text) {
+    if (!hwnd_ || !OpenClipboard(hwnd_)) {
+        return false;
+    }
+    if (!EmptyClipboard()) {
+        CloseClipboard();
+        return false;
+    }
+
+    const size_t bytes = (wide_text.size() + 1u) * sizeof(wchar_t);
+    HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!hmem) {
+        CloseClipboard();
+        return false;
+    }
+    void* dst = GlobalLock(hmem);
+    if (!dst) {
+        GlobalFree(hmem);
+        CloseClipboard();
+        return false;
+    }
+    if (!wide_text.empty()) {
+        std::memcpy(dst, wide_text.data(), wide_text.size() * sizeof(wchar_t));
+    }
+    static_cast<wchar_t*>(dst)[wide_text.size()] = L'\0';
+    GlobalUnlock(hmem);
+
+    if (!SetClipboardData(CF_UNICODETEXT, hmem)) {
+        GlobalFree(hmem);
+        CloseClipboard();
+        return false;
+    }
+    CloseClipboard();
+    return true;
+}
+
+void ViewerApp::ApplyPendingServerClipboard() {
+    if (!hwnd_ || show_modal_) {
+        pending_clipboard_retries_ = 0;
+        return;
+    }
+
+    std::string raw_text;
+    {
+        std::lock_guard<std::mutex> lk(clipboard_mutex_);
+        if (!has_pending_server_clipboard_) {
+            pending_clipboard_retries_ = 0;
+            return;
+        }
+        raw_text = pending_server_clipboard_;
+    }
+
+    if (raw_text.empty()) {
+        std::lock_guard<std::mutex> lk(clipboard_mutex_);
+        has_pending_server_clipboard_ = false;
+        pending_clipboard_retries_ = 0;
+        return;
+    }
+
+    std::wstring decoded_wide = DecodeRfbCutTextToWide(raw_text);
+    std::string normalized_lf = NormalizeLineEndingsToLf(WideToUtf8String(decoded_wide));
+    if (normalized_lf == last_synced_clipboard_utf8_ && !normalized_lf.empty()) {
+        std::lock_guard<std::mutex> lk(clipboard_mutex_);
+        has_pending_server_clipboard_ = false;
+        SecureWipeString(&pending_server_clipboard_);
+        pending_clipboard_retries_ = 0;
+        return;
+    }
+
+    std::string crlf_utf8 = NormalizeLineEndingsToCrlf(normalized_lf);
+    std::wstring wide_crlf = DecodeRfbCutTextToWide(crlf_utf8);
+    if (TryWriteWindowsClipboardText(wide_crlf)) {
+        last_synced_clipboard_utf8_ = std::move(normalized_lf);
+        last_written_clipboard_seq_ = GetClipboardSequenceNumber();
+        last_observed_clipboard_seq_ = last_written_clipboard_seq_;
+        has_written_remote_clipboard_ = true;
+        pending_clipboard_retries_ = 0;
+        std::lock_guard<std::mutex> lk(clipboard_mutex_);
+        has_pending_server_clipboard_ = false;
+        SecureWipeString(&pending_server_clipboard_);
+    } else if (pending_clipboard_retries_ > 0) {
+        --pending_clipboard_retries_;
+        next_clipboard_retry_ms_ = NowMs() + 50u;
+    }
+}
+
+void ViewerApp::ClearRemoteClipboardOnExit() {
+    if (!hwnd_ || !has_written_remote_clipboard_) {
+        return;
+    }
+    if (GetClipboardSequenceNumber() == last_written_clipboard_seq_) {
+        if (OpenClipboard(hwnd_)) {
+            EmptyClipboard();
+            CloseClipboard();
+        }
+    }
+    has_written_remote_clipboard_ = false;
+    SecureWipeString(&last_synced_clipboard_utf8_);
 }
 
 void ViewerApp::CancelPendingAuth() {
@@ -344,6 +549,17 @@ void ViewerApp::StartSession() {
     cb.on_frame_updated = [this](uint64_t /*gen*/) {
         if (hwnd_ && !frame_msg_queued_.exchange(true, std::memory_order_acq_rel)) {
             PostMessageW(hwnd_, kWmAppFrameReady, 0, 0);
+        }
+    };
+
+    cb.on_server_cut_text = [this](const std::string& text) {
+        {
+            std::lock_guard<std::mutex> lk(clipboard_mutex_);
+            pending_server_clipboard_ = text;
+            has_pending_server_clipboard_ = true;
+        }
+        if (hwnd_) {
+            PostMessageW(hwnd_, kWmAppServerClipboard, 0, 0);
         }
     };
 
@@ -572,6 +788,8 @@ void ViewerApp::PasteClipboardIntoModalField() {
             SecureWipeString(&utf8);
             volatile wchar_t* vp = clean.empty() ? nullptr : &clean[0];
             for (size_t i = 0; i < clean.size(); ++i) vp[i] = 0;
+            modal_pasted_clipboard_seq_ = GetClipboardSequenceNumber();
+            has_modal_pasted_clipboard_ = true;
             needs_render_ = true;
         }
     }
@@ -715,6 +933,16 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             break;
         }
 
+        case WM_SETFOCUS: {
+            SyncLocalClipboardToRemote(false);
+            return 0;
+        }
+
+        case WM_CLIPBOARDUPDATE: {
+            SyncLocalClipboardToRemote(false);
+            return 0;
+        }
+
         case WM_KILLFOCUS: {
             remote_button_mask_ = 0;
             dragging_slider_ = false;
@@ -728,6 +956,13 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case kWmAppFrameReady: {
             frame_msg_queued_.store(false, std::memory_order_release);
             needs_render_ = true;
+            return 0;
+        }
+
+        case kWmAppServerClipboard: {
+            pending_clipboard_retries_ = 5;
+            next_clipboard_retry_ms_ = 0;
+            ApplyPendingServerClipboard();
             return 0;
         }
 
@@ -768,6 +1003,8 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 // Scrub username from memory too once session is authenticated and live!
                 SecureWipeString(&modal_username_);
                 SecureWipeString(&modal_password_);
+                // Push existing Windows text clipboard to Mac unless it was used for Login Modal credentials.
+                SyncLocalClipboardToRemote(true);
             } else if (is_err || st == SessionState::Error) {
                 show_modal_ = true;
                 waiting_for_auth_input_ = true;
@@ -871,6 +1108,8 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                     SetCursorScaleFromSliderX(mx);
                 } else if (hit_regions_.hud_quality_button.contains(mx, my)) {
                     CycleQualityMode();
+                } else if (hit_regions_.hud_keymap_button.contains(mx, my)) {
+                    ToggleSwapCtrlCmd();
                 } else if (hit_regions_.hud_window_button.contains(mx, my)) {
                     ToggleFullscreen();
                 } else if (hit_regions_.hud_exit_button.contains(mx, my)) {
@@ -879,6 +1118,7 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 return 0;
             }
 
+            key_mapper_.CancelPendingTap();
             SetCapture(hwnd_);
             HandleRemoteMouseButton(mx, my, rfb_button::kLeft, true);
             return 0;
@@ -908,6 +1148,7 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 const float mx = static_cast<float>(GET_X_LPARAM(lparam));
                 const float my = static_cast<float>(GET_Y_LPARAM(lparam));
                 if (!(hud_reveal_ > 0.25f && hit_regions_.hud_pill.contains(mx, my))) {
+                    key_mapper_.CancelPendingTap();
                     SetCapture(hwnd_);
                     HandleRemoteMouseButton(mx, my, rfb_button::kRight, true);
                 }
@@ -929,6 +1170,7 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 const float mx = static_cast<float>(GET_X_LPARAM(lparam));
                 const float my = static_cast<float>(GET_Y_LPARAM(lparam));
                 if (!(hud_reveal_ > 0.25f && hit_regions_.hud_pill.contains(mx, my))) {
+                    key_mapper_.CancelPendingTap();
                     SetCapture(hwnd_);
                     HandleRemoteMouseButton(mx, my, rfb_button::kMiddle, true);
                 }
@@ -967,7 +1209,7 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             const bool alt  = (GetKeyState(VK_MENU) & 0x8000) != 0;
             const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
-            // Global viewer hotkeys: Ctrl+Alt+Space, Ctrl+Alt+F, Ctrl+Alt+=, Ctrl+Alt+-
+            // Global viewer hotkeys: Ctrl+Alt+Space, Ctrl+Alt+F, Ctrl+Alt+K, Ctrl+Alt+=, Ctrl+Alt+-
             if (ctrl && alt) {
                 if (wparam == VK_SPACE) {
                     if (session_) key_mapper_.ReleaseAll(session_.get());
@@ -983,6 +1225,10 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 if (wparam == 'F') {
                     if (session_) key_mapper_.ReleaseAll(session_.get());
                     ToggleFullscreen();
+                    return 0;
+                }
+                if (wparam == 'K') {
+                    ToggleSwapCtrlCmd();
                     return 0;
                 }
                 if (wparam == VK_OEM_PLUS || wparam == VK_ADD || wparam == '=' || wparam == '+') {
@@ -1043,10 +1289,10 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             }
 
             if (session_) {
-                const uint32_t sym = key_mapper_.TranslateKeyDown(wparam, lparam);
-                if (sym != 0) {
-                    session_->SendKeyEvent(sym, true);
+                if (key_mapper_.IsRemotePasteShortcut(wparam)) {
+                    SyncLocalClipboardToRemote(false);
                 }
+                key_mapper_.HandleKeyDown(session_.get(), wparam, lparam, NowMs());
             }
             return 0;
         }
@@ -1054,10 +1300,7 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case WM_KEYUP:
         case WM_SYSKEYUP: {
             if (!show_modal_ && session_) {
-                const uint32_t sym = key_mapper_.TranslateKeyUp(wparam, lparam);
-                if (sym != 0) {
-                    session_->SendKeyEvent(sym, false);
-                }
+                key_mapper_.HandleKeyUp(session_.get(), wparam, lparam, NowMs());
             }
             return 0;
         }
@@ -1091,6 +1334,11 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         }
 
         case WM_DESTROY: {
+            if (clipboard_listener_registered_) {
+                RemoveClipboardFormatListener(hwnd_);
+                clipboard_listener_registered_ = false;
+            }
+            ClearRemoteClipboardOnExit();
             StopSession();
             PostQuitMessage(0);
             return 0;
@@ -1133,6 +1381,11 @@ void ViewerApp::UpdateAnimationsAndTimers(uint64_t now_ms) {
                 }
             }
         }
+    }
+
+    // Retry deferred Mac -> Windows clipboard write if OpenClipboard was momentarily locked.
+    if (pending_clipboard_retries_ > 0 && now_ms >= next_clipboard_retry_ms_) {
+        ApplyPendingServerClipboard();
     }
 
     // Check if new RFB frame arrived
@@ -1187,6 +1440,7 @@ void ViewerApp::RenderNow() {
     RenderUiState ui;
     ui.dpi_scale = dpi_scale_;
     ui.fullscreen = options_.prefs.fullscreen;
+    ui.swap_ctrl_cmd = options_.prefs.swap_ctrl_cmd;
     ui.cursor_scale = options_.prefs.cursor_scale;
     ui.mouse_x = mouse_x_;
     ui.mouse_y = mouse_y_;
@@ -1230,7 +1484,8 @@ int ViewerApp::Run(HINSTANCE hinstance) {
     }
 
     // Persist initial non-sensitive UI preferences if explicitly passed via CLI.
-    if (options_.cursor_scale_set || options_.quality_set || options_.fullscreen_set) {
+    if (options_.cursor_scale_set || options_.quality_set ||
+        options_.fullscreen_set || options_.swap_ctrl_cmd_set) {
         PersistUiPrefs();
     }
 
@@ -1271,6 +1526,8 @@ int ViewerApp::Run(HINSTANCE hinstance) {
         DWORD wait_ms = 200;
         if (animating) {
             wait_ms = 12;
+        } else if (pending_clipboard_retries_ > 0) {
+            wait_ms = 50;
         } else if (!show_modal_ && hud_wanted_) {
             wait_ms = 60;
         } else if (show_modal_) {

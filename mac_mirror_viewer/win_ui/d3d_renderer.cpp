@@ -799,10 +799,10 @@ void D3DRenderer::DrawLoginModal(const RenderUiState& state, UiHitRegions* regio
 void D3DRenderer::DrawFloatingHud(const RenderUiState& state, UiHitRegions* regions) {
     const float cw = static_cast<float>(width_);
     const float base_s = std::clamp(state.dpi_scale, 0.75f, 4.0f);
-    // Fit comfortably even if user shrinks windowed mode below 740px.
-    const float s = std::min(base_s, std::max(0.65f, (cw - 24.0f) / 716.0f));
+    // Fit comfortably even if user shrinks windowed mode below 820px.
+    const float s = std::min(base_s, std::max(0.58f, (cw - 24.0f) / 796.0f));
 
-    const float pill_w = 708.0f * s;
+    const float pill_w = 788.0f * s;
     const float pill_h = 42.0f * s;
     const float target_top = 12.0f * s;
     const float hidden_top = -pill_h - 8.0f * s;
@@ -938,7 +938,37 @@ void D3DRenderer::DrawFloatingHud(const RenderUiState& state, UiHitRegions* regi
     draw_divider(x);
     x += 10.0f * s;
 
-    // 4. [창모드 / 전체화면]
+    // 4. [Ctrl↔⌘ / Ctrl=Ctrl] modifier swap toggle
+    RectF km_btn{x, cy - 14.0f * s, x + 78.0f * s, cy + 14.0f * s};
+    regions->hud_keymap_button = km_btn;
+    const bool km_hover = km_btn.contains(state.mouse_x, state.mouse_y);
+    D2D1_ROUNDED_RECT km_rr = D2D1::RoundedRect(ToD2DRect(km_btn), 14.0f * s, 14.0f * s);
+    if (state.swap_ctrl_cmd) {
+        brush_->SetColor(km_hover ? RgbaHex(0x25385A, 1.0f) : RgbaHex(0x1D2B45, 1.0f));
+        d2d_rt_->FillRoundedRectangle(km_rr, brush_);
+        brush_->SetColor(RgbaHex(0x4F8CFF, 0.80f));
+        d2d_rt_->DrawRoundedRectangle(km_rr, brush_, 1.0f * s);
+        DrawTextLine(L"Ctrl\u2194\u2318",
+                     fmt_hud_bold_,
+                     km_btn,
+                     RgbaHex(0x8CC0FF, 1.0f),
+                     DWRITE_TEXT_ALIGNMENT_CENTER);
+    } else {
+        brush_->SetColor(km_hover ? RgbaHex(0x293247, 1.0f) : RgbaHex(0x1D2332, 1.0f));
+        d2d_rt_->FillRoundedRectangle(km_rr, brush_);
+        brush_->SetColor(RgbaHex(0x313B52, 1.0f));
+        d2d_rt_->DrawRoundedRectangle(km_rr, brush_, 1.0f * s);
+        DrawTextLine(L"Ctrl=Ctrl",
+                     fmt_hud_,
+                     km_btn,
+                     RgbaHex(0xAEB8CE, 1.0f),
+                     DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+    x += 88.0f * s;
+    draw_divider(x);
+    x += 10.0f * s;
+
+    // 5. [창모드 / 전체화면]
     RectF win_btn{x, cy - 14.0f * s, x + 76.0f * s, cy + 14.0f * s};
     regions->hud_window_button = win_btn;
     const bool win_hover = win_btn.contains(state.mouse_x, state.mouse_y);

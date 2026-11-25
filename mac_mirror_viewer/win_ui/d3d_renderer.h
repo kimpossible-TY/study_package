@@ -46,6 +46,7 @@ struct RectF {
 struct RenderUiState {
     float dpi_scale = 1.0f;
     bool fullscreen = true;
+    bool swap_ctrl_cmd = true;
     float cursor_scale = 1.8f;
 
     float mouse_x = 0.0f;
@@ -91,6 +92,7 @@ struct UiHitRegions {
     RectF hud_slider_track;
     RectF hud_slider_hit_box;
     RectF hud_quality_button;
+    RectF hud_keymap_button;
     RectF hud_window_button;
     RectF hud_exit_button;
 };

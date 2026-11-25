@@ -124,7 +124,8 @@ std::string SerializeUiPrefsJson(const UiPrefs& prefs) {
     oss << "{\n"
         << "  \"cursor_scale\": " << scale_buf << ",\n"
         << "  \"quality_mode\": \"" << mode_str << "\",\n"
-        << "  \"fullscreen\": " << (prefs.fullscreen ? "true" : "false") << "\n"
+        << "  \"fullscreen\": " << (prefs.fullscreen ? "true" : "false") << ",\n"
+        << "  \"swap_ctrl_cmd\": " << (prefs.swap_ctrl_cmd ? "true" : "false") << "\n"
         << "}\n";
     return oss.str();
 }
@@ -157,6 +158,15 @@ bool ParseUiPrefsJson(const std::string& json_text, UiPrefs* out_prefs) {
             parsed.fullscreen = true;
         } else if (json_text.compare(fs_pos, 5, "false") == 0) {
             parsed.fullscreen = false;
+        }
+    }
+
+    size_t swap_pos = FindJsonKeyColon(json_text, "swap_ctrl_cmd");
+    if (swap_pos != std::string::npos) {
+        if (json_text.compare(swap_pos, 4, "true") == 0) {
+            parsed.swap_ctrl_cmd = true;
+        } else if (json_text.compare(swap_pos, 5, "false") == 0) {
+            parsed.swap_ctrl_cmd = false;
         }
     }
 
@@ -310,6 +320,12 @@ bool ParseCommandLineArgs(const std::vector<std::string>& args, AppOptions* opti
         } else if (flag == "--fullscreen") {
             options->prefs.fullscreen = true;
             options->fullscreen_set = true;
+        } else if (flag == "--swap-ctrl-cmd") {
+            options->prefs.swap_ctrl_cmd = true;
+            options->swap_ctrl_cmd_set = true;
+        } else if (flag == "--no-swap-ctrl-cmd") {
+            options->prefs.swap_ctrl_cmd = false;
+            options->swap_ctrl_cmd_set = true;
         } else if (flag == "--host") {
             std::string val;
             if (!consume_value(&val)) return false;
@@ -402,6 +418,8 @@ std::string FormatUsageText() {
            "  --cursor-scale <1.0..4.0>  Vector macOS cursor scale (default: 1.8)\n"
            "  --quality <mode>           adaptive | sharp | turbo (default: adaptive)\n"
            "  --windowed                 Start in windowed mode instead of borderless fullscreen\n"
+           "  --swap-ctrl-cmd            Swap Windows Ctrl and macOS Command (default: on)\n"
+           "  --no-swap-ctrl-cmd         Keep Windows Ctrl as macOS Control and Win as Command\n"
            "  --auto-user <username>     Automated test username (in-memory only)\n"
            "  --auto-pass-env <ENV>      Read automated test password from ENV (in-memory only)\n"
            "  -h, --help                 Show this help message\n";

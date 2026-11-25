@@ -200,6 +200,9 @@ struct SessionCallbacks {
     // Called after each completed FramebufferUpdate (or DesktopSize change) increments generation.
     std::function<void(uint64_t generation)> on_frame_updated;
 
+    // Called when the remote server pushes clipboard text via RFB ServerCutText (msg type 3).
+    std::function<void(const std::string& text)> on_server_cut_text;
+
     // Called on connection failure, auth rejection, or remote disconnect.
     // is_auth_failure == true indicates invalid credentials (UI re-prompts in Login Modal).
     std::function<void(const std::string& error_message, bool is_auth_failure)> on_error;

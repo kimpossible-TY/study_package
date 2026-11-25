@@ -66,10 +66,17 @@ immediately). `mac-mirror` performs the full one-shot sequence:
    - Renders a zero-latency anti-aliased vector macOS cursor (`1.0x`–`4.0x`, default
      `1.8x`; `Ctrl+Alt+=` / `Ctrl+Alt+-`) and an auto-hide floating pill HUD at the top
      edge or via `Ctrl+Alt+Space` (`FPS · ms`, cursor scale slider, `Adaptive` /
-     `Sharp` / `Turbo` quality modes, `Ctrl+Alt+F` fullscreen toggle).
+     `Sharp` / `Turbo` quality modes, `Ctrl↔⌘` / `Ctrl=Ctrl` modifier swap toggle via
+     HUD or `Ctrl+Alt+K`, `Ctrl+Alt+F` fullscreen toggle).
+   - Supports bidirectional Windows ↔ Mac UTF-8 clipboard sync (`ClientCutText` /
+     `ServerCutText` with LF/CRLF normalization) and macOS Korean/English input-source
+     switching from the Windows `한/영` (`VK_HANGUL`) key or a bare `Right Alt` tap
+     (forwarded as macOS `Control+Space`).
    - **Shared-PC security:** Username and password are kept strictly in memory and
      wiped after authentication — never saved to disk (`ui-prefs.json` stores only
-     non-sensitive `cursor_scale`, `quality_mode`, and `fullscreen`).
+     non-sensitive `cursor_scale`, `quality_mode`, `fullscreen`, and `swap_ctrl_cmd`),
+     and any remote Mac clipboard text written during the session is cleared on viewer
+     exit if still present on the Windows clipboard.
    - If `mac-mirror-viewer.exe` is absent (or `--force-tigervnc` is passed),
      `mac_vnc_tunnel.py` automatically starts the local SOCKS5 TCP forwarder
      (`127.0.0.1:15900`) and launches `vncviewer.exe -DotWhenNoCursor=1 127.0.0.1:15900`.

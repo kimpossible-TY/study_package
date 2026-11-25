@@ -34,9 +34,10 @@ public:
     int Run(HINSTANCE hinstance);
 
 private:
-    static constexpr UINT kWmAppFrameReady  = WM_APP + 1;
-    static constexpr UINT kWmAppSyncSession = WM_APP + 2;
-    static constexpr UINT kWmAppAuthPrompt  = WM_APP + 3;
+    static constexpr UINT kWmAppFrameReady       = WM_APP + 1;
+    static constexpr UINT kWmAppSyncSession      = WM_APP + 2;
+    static constexpr UINT kWmAppAuthPrompt       = WM_APP + 3;
+    static constexpr UINT kWmAppServerClipboard  = WM_APP + 4;
 
     static LRESULT CALLBACK StaticWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
     LRESULT HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
@@ -47,7 +48,13 @@ private:
     void AdjustCursorScale(float delta);
     void SetCursorScaleFromSliderX(float client_x);
     void CycleQualityMode();
+    void ToggleSwapCtrlCmd();
     void PersistUiPrefs();
+
+    void SyncLocalClipboardToRemote(bool force);
+    void ApplyPendingServerClipboard();
+    bool TryWriteWindowsClipboardText(const std::wstring& wide_text);
+    void ClearRemoteClipboardOnExit();
 
     void StartSession();
     void StopSession();
@@ -143,6 +150,20 @@ private:
     uint64_t last_anim_tick_ms_ = 0;
     uint64_t last_stats_refresh_ms_ = 0;
     uint64_t last_present_ms_ = 0;
+
+    // Bidirectional Windows <-> Mac clipboard synchronization
+    bool clipboard_listener_registered_ = false;
+    std::mutex clipboard_mutex_;
+    std::string pending_server_clipboard_;
+    bool has_pending_server_clipboard_ = false;
+    int pending_clipboard_retries_ = 0;
+    uint64_t next_clipboard_retry_ms_ = 0;
+    std::string last_synced_clipboard_utf8_;
+    DWORD last_observed_clipboard_seq_ = 0;
+    DWORD last_written_clipboard_seq_ = 0;
+    bool has_written_remote_clipboard_ = false;
+    DWORD modal_pasted_clipboard_seq_ = 0;
+    bool has_modal_pasted_clipboard_ = false;
 };
 
 }  // namespace mac_mirror

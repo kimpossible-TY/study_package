@@ -13,6 +13,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = REPO_ROOT / "mac_mirror_viewer" / "core_client"
 INC_DIR = REPO_ROOT / "mac_mirror_viewer" / "include"
+WIN_UI_DIR = REPO_ROOT / "mac_mirror_viewer" / "win_ui"
 TEST_DIR = Path(__file__).resolve().parent
 TEST_CPP = TEST_DIR / "test_rfb_core.cpp"
 
@@ -68,6 +69,7 @@ class TestRfbCoreSuite(unittest.TestCase):
             str(CORE_DIR / "rfb_decoder.cpp"),
             str(CORE_DIR / "rfb_session.cpp"),
             str(CORE_DIR / "rfb_transport.cpp"),
+            str(WIN_UI_DIR / "cli_options.cpp"),
             str(miniz_obj),
         ]
         subprocess.run(
@@ -80,6 +82,7 @@ class TestRfbCoreSuite(unittest.TestCase):
                 "-Werror",
                 f"-I{INC_DIR}",
                 f"-I{CORE_DIR}",
+                f"-I{WIN_UI_DIR}",
                 *cpp_sources,
                 "-lws2_32",
                 "-lbcrypt",
@@ -128,6 +131,7 @@ class TestRfbCoreSuite(unittest.TestCase):
                 str(CORE_DIR / "rfb_decoder.cpp"),
                 str(CORE_DIR / "rfb_session.cpp"),
                 str(CORE_DIR / "rfb_transport.cpp"),
+                str(WIN_UI_DIR / "cli_options.cpp"),
                 str(miniz_obj),
             ]
             subprocess.run(
@@ -140,6 +144,7 @@ class TestRfbCoreSuite(unittest.TestCase):
                     "-Werror",
                     f"-I{INC_DIR}",
                     f"-I{CORE_DIR}",
+                    f"-I{WIN_UI_DIR}",
                     *cpp_sources,
                     "-pthread",
                     "-o",
@@ -186,6 +191,7 @@ class TestRfbCoreSuite(unittest.TestCase):
                 str(CORE_DIR / "rfb_decoder.cpp"),
                 str(CORE_DIR / "rfb_session.cpp"),
                 str(CORE_DIR / "rfb_transport.cpp"),
+                str(WIN_UI_DIR / "cli_options.cpp"),
                 str(miniz_obj),
             ]
             subprocess.run(
@@ -198,6 +204,7 @@ class TestRfbCoreSuite(unittest.TestCase):
                     "-Werror",
                     f"-I{INC_DIR}",
                     f"-I{CORE_DIR}",
+                    f"-I{WIN_UI_DIR}",
                     *cpp_sources,
                     "-static",
                     "-static-libgcc",

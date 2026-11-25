@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(RFB_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../mac_mirror_viewer/core_client")
 set(RFB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../mac_mirror_viewer/include")
+set(WIN_UI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../mac_mirror_viewer/win_ui")
 
 add_executable(test_rfb_core
     test_rfb_core.cpp
@@ -16,11 +17,13 @@ add_executable(test_rfb_core
     "${RFB_CORE_DIR}/rfb_decoder.cpp"
     "${RFB_CORE_DIR}/rfb_session.cpp"
     "${RFB_CORE_DIR}/rfb_transport.cpp"
+    "${WIN_UI_DIR}/cli_options.cpp"
 )
 
 target_include_directories(test_rfb_core PRIVATE
     "${RFB_INCLUDE_DIR}"
     "${RFB_CORE_DIR}"
+    "${WIN_UI_DIR}"
 )
 
 if(WIN32)

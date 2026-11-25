@@ -20,6 +20,7 @@ struct UiPrefs {
     float cursor_scale = 1.8f;
     QualityMode quality_mode = QualityMode::Adaptive;
     bool fullscreen = true;
+    bool swap_ctrl_cmd = true;
 };
 
 struct AppOptions {
@@ -31,6 +32,7 @@ struct AppOptions {
     bool cursor_scale_set = false;
     bool quality_set = false;
     bool fullscreen_set = false;
+    bool swap_ctrl_cmd_set = false;
 
     // Automated test hooks (in-memory only, never persisted to disk).
     std::string auto_user;

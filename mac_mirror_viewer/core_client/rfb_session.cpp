@@ -901,15 +901,27 @@ private:
                     ReportError("ServerCutText exceeds 16 MB safety limit", false);
                     return;
                 }
-                std::vector<uint8_t> drain(std::min<size_t>(cut_len, 65536u));
-                size_t left = cut_len;
-                while (left > 0) {
-                    size_t chunk = std::min<size_t>(left, drain.size());
-                    if (!transport_.ReadExact(drain.data(), chunk, &err)) {
-                        ReportError("Failed draining ServerCutText: " + err, false);
+                if (cut_len <= 1024u * 1024u) {
+                    std::string cut_text(cut_len, '\0');
+                    if (cut_len > 0 && !transport_.ReadExact(&cut_text[0], cut_len, &err)) {
+                        ReportError("Failed reading ServerCutText payload: " + err, false);
                         return;
                     }
-                    left -= chunk;
+                    if (callbacks_.on_server_cut_text &&
+                        !stop_requested_.load(std::memory_order_acquire)) {
+                        callbacks_.on_server_cut_text(cut_text);
+                    }
+                } else {
+                    std::vector<uint8_t> drain(65536u);
+                    size_t left = cut_len;
+                    while (left > 0) {
+                        size_t chunk = std::min<size_t>(left, drain.size());
+                        if (!transport_.ReadExact(drain.data(), chunk, &err)) {
+                            ReportError("Failed draining ServerCutText: " + err, false);
+                            return;
+                        }
+                        left -= chunk;
+                    }
                 }
             } else {
                 ReportError("Unexpected RFB server message type: " + std::to_string(msg_type), false);

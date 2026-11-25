@@ -4,6 +4,9 @@
 #include "../../mac_mirror_viewer/core_client/rfb_crypto.h"
 #include "../../mac_mirror_viewer/core_client/rfb_decoder.h"
 #include "../../mac_mirror_viewer/core_client/rfb_transport.h"
+#include "../../mac_mirror_viewer/win_ui/cli_options.h"
+#include "../../mac_mirror_viewer/win_ui/clipboard_text.h"
+#include "../../mac_mirror_viewer/win_ui/keymap_win32.h"
 
 #include <atomic>
 #include <chrono>
@@ -667,6 +670,8 @@ void TestEndToEndRfbSessionOverSocks5() {
     CHECK_TRUE(rfb_listen >= 0 && socks_listen >= 0);
 
     std::atomic<bool> auth_verified_on_server{false};
+    std::mutex srv_clip_mtx;
+    std::string server_received_cut_text;
 
     // Mock Tailscale SOCKS5 server forwarding to mock screensharingd
     std::thread socks_thread([&]() {
@@ -820,6 +825,30 @@ void TestEndToEndRfbSessionOverSocks5() {
                     fbu.insert(fbu.end(), comp.begin(), comp.end());
                     SendAllPosix(cfd, fbu.data(), fbu.size());
                 }
+            } else if (cmsg == 6) {
+                // ClientCutText (3 padding bytes + BE32 length + text)
+                uint8_t hdr[7];
+                if (!RecvAllPosix(cfd, hdr, 7)) break;
+                uint32_t clen = (static_cast<uint32_t>(hdr[3]) << 24) |
+                                (static_cast<uint32_t>(hdr[4]) << 16) |
+                                (static_cast<uint32_t>(hdr[5]) << 8) |
+                                static_cast<uint32_t>(hdr[6]);
+                std::string got_cut(clen, '\0');
+                if (clen > 0 && !RecvAllPosix(cfd, &got_cut[0], clen)) break;
+                {
+                    std::lock_guard<std::mutex> lk(srv_clip_mtx);
+                    server_received_cut_text = got_cut;
+                }
+                // Respond with ServerCutText (UTF-8 Korean text)
+                const std::string reply_cut = "맥북 클립보드\n두번째 줄";
+                std::vector<uint8_t> scut(8u + reply_cut.size(), 0u);
+                scut[0] = 3u;
+                scut[4] = static_cast<uint8_t>((reply_cut.size() >> 24) & 0xFFu);
+                scut[5] = static_cast<uint8_t>((reply_cut.size() >> 16) & 0xFFu);
+                scut[6] = static_cast<uint8_t>((reply_cut.size() >> 8) & 0xFFu);
+                scut[7] = static_cast<uint8_t>(reply_cut.size() & 0xFFu);
+                std::memcpy(scut.data() + 8, reply_cut.data(), reply_cut.size());
+                SendAllPosix(cfd, scut.data(), scut.size());
             } else {
                 break;
             }
@@ -830,6 +859,8 @@ void TestEndToEndRfbSessionOverSocks5() {
     std::mutex cv_mtx;
     std::condition_variable cv;
     bool got_frame = false;
+    bool got_server_clip = false;
+    std::string client_received_cut_text;
     std::string connected_name;
     std::string seen_banner;
 
@@ -857,6 +888,12 @@ void TestEndToEndRfbSessionOverSocks5() {
             got_frame = true;
             cv.notify_all();
         }
+    };
+    cbs.on_server_cut_text = [&](const std::string& text) {
+        std::lock_guard<std::mutex> lk(cv_mtx);
+        client_received_cut_text = text;
+        got_server_clip = true;
+        cv.notify_all();
     };
 
     CHECK_TRUE(session->Start(cfg, cbs));
@@ -888,6 +925,19 @@ void TestEndToEndRfbSessionOverSocks5() {
     CHECK_EQ(stats.fb_height, 40u);
     CHECK_TRUE(stats.frames_received >= 1u);
 
+    // Bidirectional UTF-8 clipboard exchange (ClientCutText -> ServerCutText)
+    session->SendClientCutText("안녕 Windows\nLine 2");
+    {
+        std::unique_lock<std::mutex> lk(cv_mtx);
+        cv.wait_for(lk, std::chrono::seconds(5), [&]() { return got_server_clip; });
+    }
+    CHECK_TRUE(got_server_clip);
+    {
+        std::lock_guard<std::mutex> lk(srv_clip_mtx);
+        CHECK_EQ(server_received_cut_text, std::string("안녕 Windows\nLine 2"));
+    }
+    CHECK_EQ(client_received_cut_text, std::string("맥북 클립보드\n두번째 줄"));
+
     session->Stop();
     ::close(rfb_listen);
     ::close(socks_listen);
@@ -895,6 +945,149 @@ void TestEndToEndRfbSessionOverSocks5() {
     socks_thread.join();
 }
 #endif
+
+// ============================================================================
+// 6. KeyMapEngine (Ctrl<->Cmd Swap, Hangul/Right-Alt Toggle, CapsLock) & Clipboard Text
+// ============================================================================
+void TestKeyMapClipboardAndCliOptions() {
+    KeyMapEngine km;
+    CHECK_TRUE(km.swap_ctrl_cmd());
+
+    const KeyModifierState no_mods{};
+    KeyModifierState ctrl_mods{};
+    ctrl_mods.ctrl = true;
+    KeyModifierState win_mods{};
+    win_mods.win = true;
+    KeyModifierState shift_mods{};
+    shift_mods.shift = true;
+    KeyModifierState alt_mods{};
+    alt_mods.alt = true;
+
+    // 1. Default Ctrl <-> Command swap ON
+    auto ctrl_down = km.ProcessKeyDown(win_vk::kControl, 0x1D, false, false, false, ctrl_mods, 0, 1000);
+    CHECK_EQ(ctrl_down.size(), static_cast<size_t>(1));
+    CHECK_EQ(ctrl_down[0].keysym, rfb_keysym::kMetaL);
+    CHECK_TRUE(ctrl_down[0].down);
+    CHECK_TRUE(km.IsRemotePasteShortcut('V', ctrl_mods));
+    CHECK_TRUE(!km.IsRemotePasteShortcut('V', win_mods));
+
+    // Toggling swap_ctrl_cmd mid-hold must still release the exact keysym pressed (kMetaL)
+    km.SetSwapCtrlCmd(false);
+    auto ctrl_up = km.ProcessKeyUp(win_vk::kControl, 0x1D, false, false, no_mods, 0, 1050);
+    CHECK_EQ(ctrl_up.size(), static_cast<size_t>(1));
+    CHECK_EQ(ctrl_up[0].keysym, rfb_keysym::kMetaL);
+    CHECK_TRUE(!ctrl_up[0].down);
+
+    // 2. Swap OFF: Ctrl -> ControlL, Win -> MetaL
+    auto raw_ctrl = km.ProcessKeyDown(win_vk::kControl, 0x1D, false, false, false, ctrl_mods, 0, 1100);
+    CHECK_EQ(raw_ctrl.size(), static_cast<size_t>(1));
+    CHECK_EQ(raw_ctrl[0].keysym, rfb_keysym::kControlL);
+    km.ProcessKeyUp(win_vk::kControl, 0x1D, false, false, no_mods, 0, 1120);
+
+    auto raw_win = km.ProcessKeyDown(win_vk::kLWin, 0x5B, true, false, false, win_mods, 0, 1130);
+    CHECK_EQ(raw_win.size(), static_cast<size_t>(1));
+    CHECK_EQ(raw_win[0].keysym, rfb_keysym::kMetaL);
+    CHECK_TRUE(km.IsRemotePasteShortcut('V', win_mods));
+    CHECK_TRUE(!km.IsRemotePasteShortcut('V', ctrl_mods));
+    km.ProcessKeyUp(win_vk::kLWin, 0x5B, true, false, no_mods, 0, 1150);
+
+    km.SetSwapCtrlCmd(true);
+    auto swapped_win = km.ProcessKeyDown(win_vk::kLWin, 0x5B, true, false, false, win_mods, 0, 1160);
+    CHECK_EQ(swapped_win.size(), static_cast<size_t>(1));
+    CHECK_EQ(swapped_win[0].keysym, rfb_keysym::kControlL);
+    km.ProcessKeyUp(win_vk::kLWin, 0x5B, true, false, no_mods, 0, 1170);
+
+    // 3. VK_HANGUL (0x15) sends atomic Control_L + Space regardless of Ctrl<->Cmd swap
+    auto han_down = km.ProcessKeyDown(win_vk::kHangul, 0xF2, false, false, false, no_mods, 0, 2000);
+    CHECK_EQ(han_down.size(), static_cast<size_t>(4));
+    CHECK_EQ(han_down[0].keysym, rfb_keysym::kControlL);
+    CHECK_TRUE(han_down[0].down);
+    CHECK_EQ(han_down[1].keysym, 0x0020u);
+    CHECK_TRUE(han_down[1].down);
+    CHECK_EQ(han_down[2].keysym, 0x0020u);
+    CHECK_TRUE(!han_down[2].down);
+    CHECK_EQ(han_down[3].keysym, rfb_keysym::kControlL);
+    CHECK_TRUE(!han_down[3].down);
+
+    // Key-repeat and <120ms debounce are ignored
+    CHECK_TRUE(km.ProcessKeyDown(win_vk::kHangul, 0xF2, false, true, false, no_mods, 0, 2050).empty());
+    CHECK_TRUE(km.ProcessKeyDown(win_vk::kHangul, 0xF2, false, false, false, no_mods, 0, 2080).empty());
+    CHECK_TRUE(km.ProcessKeyUp(win_vk::kHangul, 0xF2, false, false, no_mods, 0, 2090).empty());
+
+    // After 120ms debounce, Hangul toggles again
+    auto han_again = km.ProcessKeyDown(win_vk::kHangul, 0xF2, false, false, false, no_mods, 0, 2200);
+    CHECK_EQ(han_again.size(), static_cast<size_t>(4));
+
+    // 4. VK_HANJA (0x19) sends atomic Option_L + Return
+    auto hanja = km.ProcessKeyDown(win_vk::kHanja, 0xF1, false, false, false, no_mods, 0, 2400);
+    CHECK_EQ(hanja.size(), static_cast<size_t>(4));
+    CHECK_EQ(hanja[0].keysym, rfb_keysym::kAltL);
+    CHECK_EQ(hanja[1].keysym, rfb_keysym::kReturn);
+
+    // 5. Bare Right Alt tap triggers Option_R release + Control_L + Space toggle
+    auto ralt_down = km.ProcessKeyDown(win_vk::kMenu, 0x38, true, false, false, alt_mods, 0, 3000);
+    CHECK_EQ(ralt_down.size(), static_cast<size_t>(1));
+    CHECK_EQ(ralt_down[0].keysym, rfb_keysym::kAltR);
+    CHECK_TRUE(ralt_down[0].down);
+
+    auto ralt_up = km.ProcessKeyUp(win_vk::kMenu, 0x38, true, false, no_mods, 0, 3120);
+    CHECK_EQ(ralt_up.size(), static_cast<size_t>(5));
+    CHECK_EQ(ralt_up[0].keysym, rfb_keysym::kAltR);
+    CHECK_TRUE(!ralt_up[0].down);
+    CHECK_EQ(ralt_up[1].keysym, rfb_keysym::kControlL);
+    CHECK_EQ(ralt_up[2].keysym, 0x0020u);
+
+    // 6. Chorded Right Alt + Left Arrow must NOT trigger language toggle
+    km.ProcessKeyDown(win_vk::kMenu, 0x38, true, false, false, alt_mods, 0, 4000);
+    auto left_step = km.ProcessKeyDown(win_vk::kLeft, 0x4B, true, false, false, alt_mods, 0, 4050);
+    CHECK_EQ(left_step.size(), static_cast<size_t>(1));
+    CHECK_EQ(left_step[0].keysym, rfb_keysym::kLeft);
+    km.ProcessKeyUp(win_vk::kLeft, 0x4B, true, false, alt_mods, 0, 4080);
+    auto ralt_chord_up = km.ProcessKeyUp(win_vk::kMenu, 0x38, true, false, no_mods, 0, 4100);
+    CHECK_EQ(ralt_chord_up.size(), static_cast<size_t>(1));
+    CHECK_EQ(ralt_chord_up[0].keysym, rfb_keysym::kAltR);
+
+    // 7. Right Alt cancelled by mouse click or held > 450ms must NOT toggle language
+    km.ProcessKeyDown(win_vk::kMenu, 0x38, true, false, false, alt_mods, 0, 5000);
+    km.CancelPendingTap();
+    auto ralt_cancelled = km.ProcessKeyUp(win_vk::kMenu, 0x38, true, false, no_mods, 0, 5050);
+    CHECK_EQ(ralt_cancelled.size(), static_cast<size_t>(1));
+
+    km.ProcessKeyDown(win_vk::kMenu, 0x38, true, false, false, alt_mods, 0, 6000);
+    auto ralt_long = km.ProcessKeyUp(win_vk::kMenu, 0x38, true, false, no_mods, 0, 6600);
+    CHECK_EQ(ralt_long.size(), static_cast<size_t>(1));
+
+    // 8. Letters follow physical Shift only (lowercase without Shift, uppercase with Shift)
+    auto r_lower = km.ProcessKeyDown('R', 0x13, false, false, false, no_mods, 0, 7000);
+    CHECK_EQ(r_lower[0].keysym, static_cast<uint32_t>('r'));
+    km.ProcessKeyUp('R', 0x13, false, false, no_mods, 0, 7020);
+    auto r_upper = km.ProcessKeyDown('R', 0x13, false, false, false, shift_mods, 0, 7050);
+    CHECK_EQ(r_upper[0].keysym, static_cast<uint32_t>('R'));
+    km.ProcessKeyUp('R', 0x13, false, false, shift_mods, 0, 7070);
+
+    // 9. Clipboard line ending normalization helpers
+    CHECK_EQ(NormalizeLineEndingsToLf("a\r\nb\rc\nd"), std::string("a\nb\nc\nd"));
+    CHECK_EQ(NormalizeLineEndingsToCrlf("a\nb\r\nc\rd"), std::string("a\r\nb\r\nc\r\nd"));
+    CHECK_EQ(NormalizeLineEndingsToLf("한글\r\n테스트"), std::string("한글\n테스트"));
+    CHECK_EQ(NormalizeLineEndingsToCrlf("한글\n테스트"), std::string("한글\r\n테스트"));
+
+    // 10. UiPrefs & CLI flags for swap_ctrl_cmd
+    UiPrefs prefs{};
+    CHECK_TRUE(prefs.swap_ctrl_cmd);
+    prefs.swap_ctrl_cmd = false;
+    std::string serialized = SerializeUiPrefsJson(prefs);
+    CHECK_TRUE(serialized.find("\"swap_ctrl_cmd\": false") != std::string::npos);
+    UiPrefs parsed{};
+    CHECK_TRUE(ParseUiPrefsJson(serialized, &parsed));
+    CHECK_TRUE(!parsed.swap_ctrl_cmd);
+
+    AppOptions opts{};
+    CHECK_TRUE(ParseCommandLineArgs({"--no-swap-ctrl-cmd"}, &opts));
+    CHECK_TRUE(opts.swap_ctrl_cmd_set);
+    CHECK_TRUE(!opts.prefs.swap_ctrl_cmd);
+    CHECK_TRUE(ParseCommandLineArgs({"--swap-ctrl-cmd"}, &opts));
+    CHECK_TRUE(opts.prefs.swap_ctrl_cmd);
+}
 
 }  // namespace
 
@@ -910,6 +1103,9 @@ int main() {
 
     std::cout << "[test_rfb_core] Running Adaptive Quality & 6ms rate-limiter tests...\n";
     TestAdaptiveQualityTransitions();
+
+    std::cout << "[test_rfb_core] Running KeyMap, Hangul toggle, Clipboard & CLI options tests...\n";
+    TestKeyMapClipboardAndCliOptions();
 
 #ifndef _WIN32
     std::cout << "[test_rfb_core] Running end-to-end RFB 003.889 + SOCKS5 session test...\n";
