@@ -194,37 +194,19 @@ public:
         if (w > 0 && x >= w) x = static_cast<uint16_t>(w - 1);
         if (h > 0 && y >= h) y = static_cast<uint16_t>(h - 1);
 
+        std::optional<WheelStep> immediate;
         {
             std::lock_guard<std::mutex> lock(ctrl_mutex_);
-            adaptive_.OnWheelInput(AdaptiveQualityController::Clock::now());
+            immediate = adaptive_.OnWheelInput(
+                AdaptiveQualityController::Clock::now(),
+                x,
+                y,
+                steps_vertical,
+                steps_horizontal,
+                current_button_mask);
         }
-
-        uint8_t base_mask = static_cast<uint8_t>(current_button_mask & 0x07u);
-        std::vector<uint8_t> batch;
-        batch.reserve(48);
-
-        auto append_clicks = [&](int32_t steps, uint8_t pos_bit, uint8_t neg_bit) {
-            if (steps == 0) return;
-            uint8_t wheel_bit = (steps > 0) ? pos_bit : neg_bit;
-            int32_t count = std::min<int32_t>(std::abs(steps), 16);
-            for (int32_t i = 0; i < count; ++i) {
-                uint8_t press[6] = {5u, static_cast<uint8_t>(base_mask | wheel_bit), 0, 0, 0, 0};
-                WriteBE16(press + 2, x);
-                WriteBE16(press + 4, y);
-                batch.insert(batch.end(), press, press + 6);
-
-                uint8_t release[6] = {5u, base_mask, 0, 0, 0, 0};
-                WriteBE16(release + 2, x);
-                WriteBE16(release + 4, y);
-                batch.insert(batch.end(), release, release + 6);
-            }
-        };
-
-        append_clicks(steps_vertical, rfb_button::kWheelUp, rfb_button::kWheelDown);
-        append_clicks(steps_horizontal, rfb_button::kWheelRight, rfb_button::kWheelLeft);
-
-        if (!batch.empty()) {
-            transport_.SendAll(batch.data(), batch.size());
+        if (immediate.has_value()) {
+            SendWireWheelStep(*immediate);
         }
     }
 
@@ -319,6 +301,33 @@ private:
         WriteBE16(pkt + 2, x);
         WriteBE16(pkt + 4, y);
         return transport_.SendAll(pkt, sizeof(pkt));
+    }
+
+    bool SendWireWheelStep(const WheelStep& step) {
+        const uint8_t base_mask = static_cast<uint8_t>(step.button_mask & 0x07u);
+        uint8_t batch[24];
+        size_t len = 0;
+
+        auto append_click = [&](int8_t dir, uint8_t pos_bit, uint8_t neg_bit) {
+            if (dir == 0) return;
+            const uint8_t wheel_bit = (dir > 0) ? pos_bit : neg_bit;
+            batch[len + 0] = 5u;
+            batch[len + 1] = static_cast<uint8_t>(base_mask | wheel_bit);
+            WriteBE16(batch + len + 2, step.x);
+            WriteBE16(batch + len + 4, step.y);
+            len += 6;
+
+            batch[len + 0] = 5u;
+            batch[len + 1] = base_mask;
+            WriteBE16(batch + len + 2, step.x);
+            WriteBE16(batch + len + 4, step.y);
+            len += 6;
+        };
+
+        append_click(step.dv, rfb_button::kWheelUp, rfb_button::kWheelDown);
+        append_click(step.dh, rfb_button::kWheelRight, rfb_button::kWheelLeft);
+        if (len == 0) return true;
+        return transport_.SendAll(batch, len);
     }
 
     bool SendWireSetPixelFormat(const RfbPixelFormat& pf, std::string* err) {
@@ -721,19 +730,29 @@ private:
         // Main RFB streaming & Adaptive Quality loop
         while (!stop_requested_.load(std::memory_order_acquire)) {
             std::optional<PointerSample> due_ptr;
+            std::optional<WheelStep> due_wheel;
             QualityDecision decision{};
             bool has_pending_ptr = false;
+            bool has_pending_wheel = false;
             {
                 std::lock_guard<std::mutex> lock(ctrl_mutex_);
                 auto now = AdaptiveQualityController::Clock::now();
                 due_ptr = adaptive_.FlushPendingPointer(now);
                 has_pending_ptr = adaptive_.HasPendingPointer();
+                due_wheel = adaptive_.FlushPendingWheel(now);
+                has_pending_wheel = adaptive_.HasPendingWheel();
                 decision = adaptive_.PeekDecision(now, current_bpp);
             }
 
             if (due_ptr.has_value() && !config_.view_only) {
                 if (!SendWirePointerEvent(due_ptr->x, due_ptr->y, due_ptr->button_mask)) {
                     ReportError("Connection lost while sending pointer input", false);
+                    return;
+                }
+            }
+            if (due_wheel.has_value() && !config_.view_only) {
+                if (!SendWireWheelStep(*due_wheel)) {
+                    ReportError("Connection lost while sending wheel input", false);
                     return;
                 }
             }
@@ -766,7 +785,7 @@ private:
                 }
             }
 
-            int poll_ms = has_pending_ptr ? 4 : 20;
+            int poll_ms = (has_pending_ptr || has_pending_wheel) ? 4 : 20;
             int wr = transport_.WaitReadable(poll_ms, &err);
             if (wr < 0) {
                 ReportError(err.empty() ? "Disconnected from Mac" : err, false);

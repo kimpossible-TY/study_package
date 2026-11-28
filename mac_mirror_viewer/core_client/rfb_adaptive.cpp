@@ -95,9 +95,73 @@ std::optional<PointerSample> AdaptiveQualityController::FlushPendingPointer(Time
     return out;
 }
 
-void AdaptiveQualityController::OnWheelInput(TimePoint now) {
-    burst_initialized_ = true;
-    last_burst_time_ = now;
+std::optional<WheelStep> AdaptiveQualityController::OnWheelInput(TimePoint now,
+                                                                 uint16_t x,
+                                                                 uint16_t y,
+                                                                 int32_t steps_vertical,
+                                                                 int32_t steps_horizontal,
+                                                                 uint8_t button_mask) {
+    if (steps_vertical == 0 && steps_horizontal == 0) {
+        return std::nullopt;
+    }
+
+    // Do NOT churn SetPixelFormat (32 -> 16 -> 32 + full-screen refresh) during wheel
+    // scroll: macOS screensharingd already handles scrolling efficiently via CopyRect +
+    // incremental ZRLE strips, and format transitions cause visible 250ms scroll hitches.
+    wheel_x_ = x;
+    wheel_y_ = y;
+    wheel_button_mask_ = static_cast<uint8_t>(button_mask & 0x07u);
+
+    if (steps_vertical != 0) {
+        if ((pending_wheel_v_ > 0 && steps_vertical < 0) ||
+            (pending_wheel_v_ < 0 && steps_vertical > 0)) {
+            pending_wheel_v_ = 0;
+        }
+        pending_wheel_v_ = std::clamp<int32_t>(
+            pending_wheel_v_ + steps_vertical, -kMaxQueuedWheelSteps, kMaxQueuedWheelSteps);
+    }
+    if (steps_horizontal != 0) {
+        if ((pending_wheel_h_ > 0 && steps_horizontal < 0) ||
+            (pending_wheel_h_ < 0 && steps_horizontal > 0)) {
+            pending_wheel_h_ = 0;
+        }
+        pending_wheel_h_ = std::clamp<int32_t>(
+            pending_wheel_h_ + steps_horizontal, -kMaxQueuedWheelSteps, kMaxQueuedWheelSteps);
+    }
+
+    return FlushPendingWheel(now);
+}
+
+std::optional<WheelStep> AdaptiveQualityController::FlushPendingWheel(TimePoint now) {
+    if (pending_wheel_v_ == 0 && pending_wheel_h_ == 0) {
+        return std::nullopt;
+    }
+    if (has_last_wheel_ && (now - last_wheel_send_time_) < kWheelStepInterval) {
+        return std::nullopt;
+    }
+
+    WheelStep step{};
+    step.x = wheel_x_;
+    step.y = wheel_y_;
+    step.button_mask = wheel_button_mask_;
+    if (pending_wheel_v_ > 0) {
+        step.dv = 1;
+        --pending_wheel_v_;
+    } else if (pending_wheel_v_ < 0) {
+        step.dv = -1;
+        ++pending_wheel_v_;
+    }
+    if (pending_wheel_h_ > 0) {
+        step.dh = 1;
+        --pending_wheel_h_;
+    } else if (pending_wheel_h_ < 0) {
+        step.dh = -1;
+        ++pending_wheel_h_;
+    }
+
+    has_last_wheel_ = true;
+    last_wheel_send_time_ = now;
+    return step;
 }
 
 QualityDecision AdaptiveQualityController::PeekDecision(TimePoint now,

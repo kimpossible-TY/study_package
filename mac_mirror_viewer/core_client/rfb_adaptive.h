@@ -15,6 +15,14 @@ struct PointerSample {
     uint8_t button_mask = 0;
 };
 
+struct WheelStep {
+    uint16_t x = 0;
+    uint16_t y = 0;
+    int8_t dv = 0;  // -1, 0, or +1 vertical wheel step
+    int8_t dh = 0;  // -1, 0, or +1 horizontal wheel step
+    uint8_t button_mask = 0;
+};
+
 struct QualityDecision {
     uint8_t target_bpp = 32;            // 16 (RGB565) or 32 (BGRX8888)
     bool format_changed = false;        // True if target_bpp != currently applied bpp
@@ -34,6 +42,8 @@ public:
     static constexpr auto kBurstHoldDuration = std::chrono::milliseconds(250);
     static constexpr auto kRapidMoveWindow = std::chrono::milliseconds(50);
     static constexpr auto kPointerMinInterval = std::chrono::milliseconds(6);
+    static constexpr auto kWheelStepInterval = std::chrono::milliseconds(12);
+    static constexpr int32_t kMaxQueuedWheelSteps = 24;
     static constexpr size_t kRapidMoveThreshold = 3;
 
     explicit AdaptiveQualityController(QualityMode initial_mode = QualityMode::Adaptive);
@@ -55,8 +65,22 @@ public:
 
     bool HasPendingPointer() const noexcept { return pending_pointer_.has_value(); }
 
-    // Records wheel scroll activity (triggers 16-bit burst in Adaptive mode).
-    void OnWheelInput(TimePoint now);
+    // Queues wheel scroll steps and paces emission smoothly (1 step per 12ms)
+    // without churning SetPixelFormat on macOS screensharingd.
+    // Returns an immediate WheelStep if the pacing window allows instant emission.
+    std::optional<WheelStep> OnWheelInput(TimePoint now,
+                                          uint16_t x,
+                                          uint16_t y,
+                                          int32_t steps_vertical,
+                                          int32_t steps_horizontal,
+                                          uint8_t button_mask);
+
+    // Flushes the next paced wheel step once kWheelStepInterval has elapsed.
+    std::optional<WheelStep> FlushPendingWheel(TimePoint now);
+
+    bool HasPendingWheel() const noexcept {
+        return pending_wheel_v_ != 0 || pending_wheel_h_ != 0;
+    }
 
     // Evaluates desired pixel format (16 vs 32 bpp) at `now` against `applied_bpp`.
     QualityDecision PeekDecision(TimePoint now, uint8_t applied_bpp) const noexcept;
@@ -85,6 +109,14 @@ private:
     PointerSample last_sent_pointer_{};
     TimePoint last_pointer_send_time_{};
     std::optional<PointerSample> pending_pointer_;
+
+    bool has_last_wheel_ = false;
+    TimePoint last_wheel_send_time_{};
+    uint16_t wheel_x_ = 0;
+    uint16_t wheel_y_ = 0;
+    uint8_t wheel_button_mask_ = 0;
+    int32_t pending_wheel_v_ = 0;
+    int32_t pending_wheel_h_ = 0;
 
     bool explicit_full_refresh_ = false;
 

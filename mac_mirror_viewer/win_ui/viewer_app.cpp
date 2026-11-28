@@ -843,11 +843,9 @@ void ViewerApp::HandleRemoteMouseWheel(float x, float y, int delta, bool horizon
     if (!session_ || show_modal_) return;
     if (hud_reveal_ > 0.25f && hit_regions_.hud_pill.contains(x, y)) return;
 
-    int* accum = horizontal ? &wheel_accum_h_ : &wheel_accum_v_;
-    *accum += delta;
-    const int steps = *accum / WHEEL_DELTA;
+    ScrollWheelAccumulator* accum = horizontal ? &wheel_accum_h_ : &wheel_accum_v_;
+    const int steps = accum->Accumulate(delta, NowMs());
     if (steps == 0) return;
-    *accum -= steps * WHEEL_DELTA;
 
     uint16_t rx = 0, ry = 0;
     if (MapClientToRemote(x, y, &rx, &ry)) {
@@ -946,6 +944,8 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
         case WM_KILLFOCUS: {
             remote_button_mask_ = 0;
             dragging_slider_ = false;
+            wheel_accum_v_.Reset();
+            wheel_accum_h_.Reset();
             if (session_) {
                 key_mapper_.ReleaseAll(session_.get());
             }

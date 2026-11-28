@@ -7,6 +7,7 @@
 #include "../../mac_mirror_viewer/win_ui/cli_options.h"
 #include "../../mac_mirror_viewer/win_ui/clipboard_text.h"
 #include "../../mac_mirror_viewer/win_ui/keymap_win32.h"
+#include "../../mac_mirror_viewer/win_ui/scroll_smoother.h"
 
 #include <atomic>
 #include <chrono>
@@ -597,11 +598,52 @@ void TestAdaptiveQualityTransitions() {
     CHECK_TRUE(d_sharp.request_full_refresh);
     ctrl.CommitAppliedFormat(32, true);
 
-    // Wheel scroll also triggers 16bpp burst for 250ms
+    // Wheel scroll must NOT churn SetPixelFormat (stays 32bpp so CopyRect+ZRLE streams smoothly)
+    // and paces multi-step scroll smoothly at 12ms intervals with instant direction reversal.
     auto tw = t0 + std::chrono::milliseconds(500);
-    ctrl.OnWheelInput(tw);
-    CHECK_EQ(ctrl.PeekDecision(tw + std::chrono::milliseconds(10), 32).target_bpp, 16);
-    CHECK_EQ(ctrl.PeekDecision(tw + std::chrono::milliseconds(260), 16).target_bpp, 32);
+    auto w1 = ctrl.OnWheelInput(tw, 300, 200, 3, 0, 0);
+    CHECK_TRUE(w1.has_value());
+    CHECK_EQ(w1->dv, 1);
+    CHECK_EQ(w1->dh, 0);
+    CHECK_TRUE(ctrl.HasPendingWheel());
+    CHECK_EQ(ctrl.PeekDecision(tw + std::chrono::milliseconds(10), 32).target_bpp, 32);
+
+    // Before 12ms elapses, FlushPendingWheel waits
+    CHECK_TRUE(!ctrl.FlushPendingWheel(tw + std::chrono::milliseconds(6)).has_value());
+    // At +12ms and +24ms, remaining 2 steps flush one at a time
+    auto w2 = ctrl.FlushPendingWheel(tw + std::chrono::milliseconds(12));
+    CHECK_TRUE(w2.has_value());
+    CHECK_EQ(w2->dv, 1);
+    auto w3 = ctrl.FlushPendingWheel(tw + std::chrono::milliseconds(24));
+    CHECK_TRUE(w3.has_value());
+    CHECK_EQ(w3->dv, 1);
+    CHECK_TRUE(!ctrl.HasPendingWheel());
+
+    // Direction reversal cancels queued opposite-direction steps immediately
+    auto w_up = ctrl.OnWheelInput(tw + std::chrono::milliseconds(50), 300, 200, 5, 0, 0);
+    CHECK_TRUE(w_up.has_value());
+    CHECK_EQ(w_up->dv, 1);
+    auto w_rev = ctrl.OnWheelInput(tw + std::chrono::milliseconds(55), 300, 200, -1, 0, 0);
+    CHECK_TRUE(!w_rev.has_value());  // paced inside 12ms window
+    auto w_rev_flush = ctrl.FlushPendingWheel(tw + std::chrono::milliseconds(62));
+    CHECK_TRUE(w_rev_flush.has_value());
+    CHECK_EQ(w_rev_flush->dv, -1);
+    CHECK_TRUE(!ctrl.HasPendingWheel());
+
+    // ScrollWheelAccumulator: fine precision touchpad deltas, notched wheels, reversal & idle reset
+    ScrollWheelAccumulator acc;
+    CHECK_EQ(acc.Accumulate(20, 1000), 0);
+    CHECK_EQ(acc.Accumulate(20, 1010), 1);    // 40 -> 1 fine step immediately
+    CHECK_EQ(acc.Accumulate(120, 1020), 3);   // standard 120 detent -> 3 fine steps
+    CHECK_EQ(acc.Accumulate(30, 1030), 0);
+    CHECK_EQ(acc.remainder(), 30);
+    // Direction reversal drops +30 remainder instead of eating -40
+    CHECK_EQ(acc.Accumulate(-40, 1040), -1);
+    CHECK_EQ(acc.remainder(), 0);
+    // Idle gap >= 250ms clears stale remainder
+    CHECK_EQ(acc.Accumulate(30, 1050), 0);
+    CHECK_EQ(acc.Accumulate(20, 1310), 0);
+    CHECK_EQ(acc.remainder(), 20);
 
     // Explicit Sharp / Turbo overrides
     ctrl.SetQualityMode(QualityMode::Turbo, tw + std::chrono::milliseconds(300));

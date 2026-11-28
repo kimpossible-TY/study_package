@@ -20,6 +20,7 @@
 #include "d3d_renderer.h"
 #include "keymap_win32.h"
 #include "rfb_session.h"
+#include "scroll_smoother.h"
 
 namespace mac_mirror {
 
@@ -142,8 +143,8 @@ private:
     bool mouse_in_window_ = true;
     bool mouse_initialized_ = false;
     uint8_t remote_button_mask_ = 0;
-    int wheel_accum_v_ = 0;
-    int wheel_accum_h_ = 0;
+    ScrollWheelAccumulator wheel_accum_v_;
+    ScrollWheelAccumulator wheel_accum_h_;
 
     // Render loop pacing
     bool needs_render_ = true;
