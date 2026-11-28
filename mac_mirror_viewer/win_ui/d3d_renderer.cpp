@@ -200,6 +200,9 @@ bool D3DRenderer::Initialize(HWND hwnd, uint32_t width, uint32_t height, float d
     if (!CreateSwapChainResources()) {
         return false;
     }
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+    (void)frame_interp_.Initialize(d3d_device_, d3d_context_);
+#endif
     if (!EnsureTextFormats(dpi_scale)) {
         return false;
     }
@@ -208,6 +211,9 @@ bool D3DRenderer::Initialize(HWND hwnd, uint32_t width, uint32_t height, float d
 
 void D3DRenderer::Shutdown() {
     ReleaseSwapChainResources();
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+    frame_interp_.Shutdown();
+#endif
 
     SafeRelease(fmt_title_);
     SafeRelease(fmt_subtitle_);
@@ -268,6 +274,9 @@ bool D3DRenderer::CreateSwapChainResources() {
 }
 
 void D3DRenderer::ReleaseSwapChainResources() {
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+    frame_interp_.ReleaseRenderTargetInterop();
+#endif
     SafeRelease(frame_bitmap_);
     SafeRelease(brush_);
     SafeRelease(d2d_ctx_);
@@ -393,6 +402,9 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session, uint64_t now_ms) {
     if (need_recreate) {
         SafeRelease(frame_bitmap_);
         scroll_interp_.ResetAnimation();
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+        frame_interp_.ResetPacer();
+#endif
         D2D1_BITMAP_PROPERTIES bmp_props = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96.0f, 96.0f);
         HRESULT hr = d2d_rt_->CreateBitmap(
@@ -436,6 +448,13 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session, uint64_t now_ms) {
             now_ms, prev_fb_bgra_.data(), fb.pixels_bgra, fb.width, fb.height, fb.stride_bytes, dirty_bounds);
     }
 
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+    if (prev_fb_bgra_.size() == expected_bytes) {
+        frame_interp_.PushFramePair(
+            d2d_rt_, prev_fb_bgra_.data(), fb.pixels_bgra, fb.width, fb.height, fb.stride_bytes, now_ms);
+    }
+#endif
+
     if (dirty_rects.empty()) {
         D2D1_RECT_U full_rect = D2D1::RectU(0, 0, fb.width, fb.height);
         frame_bitmap_->CopyFromMemory(&full_rect, fb.pixels_bgra, fb.stride_bytes);
@@ -475,6 +494,15 @@ bool D3DRenderer::RenderFrame(const RenderUiState& state, UiHitRegions* out_regi
     UiHitRegions regions = {};
     regions.remote_viewport = ComputeAspectViewport(width_, height_, fb_width_, fb_height_);
 
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+    ID2D1Bitmap* interp_bmp =
+        (!state.show_modal && state.frame_gen_mode != FrameGenMode::Off)
+            ? frame_interp_.SynthesizeBeforeD2D(d2d_rt_, state.frame_gen_mode, state.now_ms)
+            : nullptr;
+#else
+    ID2D1Bitmap* interp_bmp = nullptr;
+#endif
+
     d2d_rt_->BeginDraw();
     d2d_rt_->SetTransform(D2D1::Matrix3x2F::Identity());
 
@@ -486,49 +514,56 @@ bool D3DRenderer::RenderFrame(const RenderUiState& state, UiHitRegions* out_regi
         const D2D1_RECT_F src_rect =
             D2D1::RectF(0.0f, 0.0f, static_cast<float>(fb_width_), static_cast<float>(fb_height_));
 
-        auto draw_bmp = [&](const D2D1_RECT_F& dst, const D2D1_RECT_F& src) {
+        auto draw_bmp = [&](ID2D1Bitmap* bmp, const D2D1_RECT_F& dst, const D2D1_RECT_F& src) {
             if (d2d_ctx_) {
                 const bool is_downscaling = (regions.remote_viewport.width() < static_cast<float>(fb_width_));
                 const D2D1_INTERPOLATION_MODE interp = is_downscaling
                                                            ? D2D1_INTERPOLATION_MODE_MULTI_SAMPLE_LINEAR
                                                            : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC;
-                d2d_ctx_->DrawBitmap(frame_bitmap_, &dst, 1.0f, interp, &src, nullptr);
+                d2d_ctx_->DrawBitmap(bmp, &dst, 1.0f, interp, &src, nullptr);
             } else {
                 d2d_rt_->DrawBitmap(
-                    frame_bitmap_, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, src);
+                    bmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, src);
             }
         };
 
-        // 1. Always draw the full crisp framebuffer first (fixed UI + newly revealed edge strip).
-        draw_bmp(dst_rect, src_rect);
+        if (interp_bmp != nullptr) {
+            const D2D1_SIZE_F interp_sz = interp_bmp->GetSize();
+            const D2D1_RECT_F interp_src = D2D1::RectF(0.0f, 0.0f, interp_sz.width, interp_sz.height);
+            draw_bmp(interp_bmp, dst_rect, interp_src);
+        } else {
+            // 1. Always draw the full crisp framebuffer first (fixed UI + newly revealed edge strip).
+            draw_bmp(frame_bitmap_, dst_rect, src_rect);
 
-        // 2. If a wheel-triggered vertical scroll glide is active, smoothly slide ONLY the
-        //    scrolled region inside a tight clip rect at 60/120Hz with 100% original text pixels.
-        const ScrollVisualState& sv = scroll_interp_.state();
-        if (!state.show_modal && sv.active && std::fabs(sv.offset_y) >= ScrollMotionInterpolator::kSettleThresholdPx &&
-            sv.region.w > 0 && sv.region.h > 0) {
-            const float sx = regions.remote_viewport.width() / static_cast<float>(fb_width_);
-            const float sy = regions.remote_viewport.height() / static_cast<float>(fb_height_);
-            const D2D1_RECT_F clip_dst = D2D1::RectF(
-                regions.remote_viewport.left + static_cast<float>(sv.region.x) * sx,
-                regions.remote_viewport.top + static_cast<float>(sv.region.y) * sy,
-                regions.remote_viewport.left + static_cast<float>(sv.region.x + sv.region.w) * sx,
-                regions.remote_viewport.top + static_cast<float>(sv.region.y + sv.region.h) * sy);
-            const float dy_vp = sv.offset_y * sy;
-            const D2D1_RECT_F shifted_dst = D2D1::RectF(
-                clip_dst.left,
-                clip_dst.top + dy_vp,
-                clip_dst.right,
-                clip_dst.bottom + dy_vp);
-            const D2D1_RECT_F region_src = D2D1::RectF(
-                static_cast<float>(sv.region.x),
-                static_cast<float>(sv.region.y),
-                static_cast<float>(sv.region.x + sv.region.w),
-                static_cast<float>(sv.region.y + sv.region.h));
+            // 2. If FrameGen is Off and a wheel-triggered vertical scroll glide is active, smoothly slide
+            //    ONLY the scrolled region inside a tight clip rect at 60/120Hz with 100% original text pixels.
+            const ScrollVisualState& sv = scroll_interp_.state();
+            if (!state.show_modal && state.frame_gen_mode == FrameGenMode::Off &&
+                sv.active && std::fabs(sv.offset_y) >= ScrollMotionInterpolator::kSettleThresholdPx &&
+                sv.region.w > 0 && sv.region.h > 0) {
+                const float sx = regions.remote_viewport.width() / static_cast<float>(fb_width_);
+                const float sy = regions.remote_viewport.height() / static_cast<float>(fb_height_);
+                const D2D1_RECT_F clip_dst = D2D1::RectF(
+                    regions.remote_viewport.left + static_cast<float>(sv.region.x) * sx,
+                    regions.remote_viewport.top + static_cast<float>(sv.region.y) * sy,
+                    regions.remote_viewport.left + static_cast<float>(sv.region.x + sv.region.w) * sx,
+                    regions.remote_viewport.top + static_cast<float>(sv.region.y + sv.region.h) * sy);
+                const float dy_vp = sv.offset_y * sy;
+                const D2D1_RECT_F shifted_dst = D2D1::RectF(
+                    clip_dst.left,
+                    clip_dst.top + dy_vp,
+                    clip_dst.right,
+                    clip_dst.bottom + dy_vp);
+                const D2D1_RECT_F region_src = D2D1::RectF(
+                    static_cast<float>(sv.region.x),
+                    static_cast<float>(sv.region.y),
+                    static_cast<float>(sv.region.x + sv.region.w),
+                    static_cast<float>(sv.region.y + sv.region.h));
 
-            d2d_rt_->PushAxisAlignedClip(clip_dst, D2D1_ANTIALIAS_MODE_ALIASED);
-            draw_bmp(shifted_dst, region_src);
-            d2d_rt_->PopAxisAlignedClip();
+                d2d_rt_->PushAxisAlignedClip(clip_dst, D2D1_ANTIALIAS_MODE_ALIASED);
+                draw_bmp(frame_bitmap_, shifted_dst, region_src);
+                d2d_rt_->PopAxisAlignedClip();
+            }
         }
     }
 
@@ -877,10 +912,10 @@ void D3DRenderer::DrawLoginModal(const RenderUiState& state, UiHitRegions* regio
 void D3DRenderer::DrawFloatingHud(const RenderUiState& state, UiHitRegions* regions) {
     const float cw = static_cast<float>(width_);
     const float base_s = std::clamp(state.dpi_scale, 0.75f, 4.0f);
-    // Fit comfortably even if user shrinks windowed mode below 820px.
-    const float s = std::min(base_s, std::max(0.58f, (cw - 24.0f) / 796.0f));
+    // Fit comfortably even if user shrinks windowed mode to 640px.
+    const float s = std::min(base_s, std::max(0.52f, (cw - 24.0f) / 894.0f));
 
-    const float pill_w = 788.0f * s;
+    const float pill_w = 886.0f * s;
     const float pill_h = 42.0f * s;
     const float target_top = 12.0f * s;
     const float hidden_top = -pill_h - 8.0f * s;
@@ -1016,7 +1051,40 @@ void D3DRenderer::DrawFloatingHud(const RenderUiState& state, UiHitRegions* regi
     draw_divider(x);
     x += 10.0f * s;
 
-    // 4. [Ctrl↔⌘ / Ctrl=Ctrl] modifier swap toggle
+    // 4. [FG:Off / FG:Flow / FG:Neural] Frame-Generation mode pill button
+    RectF fg_btn{x, cy - 14.0f * s, x + 78.0f * s, cy + 14.0f * s};
+    regions->hud_framegen_button = fg_btn;
+    const bool fg_hover = fg_btn.contains(state.mouse_x, state.mouse_y);
+    D2D1_COLOR_F fg_accent = RgbaHex(0x94A3B8, 1.0f);
+    D2D1_COLOR_F fg_fill = fg_hover ? RgbaHex(0x262F42, 1.0f) : RgbaHex(0x1B2130, 1.0f);
+    D2D1_COLOR_F fg_border = RgbaHex(0x334155, 1.0f);
+    IDWriteTextFormat* fg_fmt = fmt_hud_;
+    if (state.frame_gen_mode == FrameGenMode::OpticalFlow) {
+        fg_accent = RgbaHex(0x22D3EE, 1.0f);
+        fg_fill = fg_hover ? RgbaHex(0x163847, 1.0f) : RgbaHex(0x112A36, 1.0f);
+        fg_border = RgbaHex(0x22D3EE, 0.72f);
+        fg_fmt = fmt_hud_bold_;
+    } else if (state.frame_gen_mode == FrameGenMode::Neural) {
+        fg_accent = RgbaHex(0xF472B6, 1.0f);
+        fg_fill = fg_hover ? RgbaHex(0x3D1D38, 1.0f) : RgbaHex(0x2B1629, 1.0f);
+        fg_border = RgbaHex(0xF472B6, 0.78f);
+        fg_fmt = fmt_hud_bold_;
+    }
+    D2D1_ROUNDED_RECT fg_rr = D2D1::RoundedRect(ToD2DRect(fg_btn), 14.0f * s, 14.0f * s);
+    brush_->SetColor(fg_fill);
+    d2d_rt_->FillRoundedRectangle(fg_rr, brush_);
+    brush_->SetColor(fg_border);
+    d2d_rt_->DrawRoundedRectangle(fg_rr, brush_, 1.0f * s);
+    DrawTextLine(FrameGenModeHudLabel(state.frame_gen_mode),
+                 fg_fmt,
+                 fg_btn,
+                 fg_accent,
+                 DWRITE_TEXT_ALIGNMENT_CENTER);
+    x += 88.0f * s;
+    draw_divider(x);
+    x += 10.0f * s;
+
+    // 5. [Ctrl↔⌘ / Ctrl=Ctrl] modifier swap toggle
     RectF km_btn{x, cy - 14.0f * s, x + 78.0f * s, cy + 14.0f * s};
     regions->hud_keymap_button = km_btn;
     const bool km_hover = km_btn.contains(state.mouse_x, state.mouse_y);

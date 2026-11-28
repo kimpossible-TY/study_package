@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "frame_gen_mode.h"
 #include "rfb_session.h"
 
 namespace mac_mirror {
@@ -19,6 +20,7 @@ inline float ClampCursorScale(float scale) noexcept {
 struct UiPrefs {
     float cursor_scale = 1.8f;
     QualityMode quality_mode = QualityMode::Adaptive;
+    FrameGenMode frame_gen_mode = FrameGenMode::Off;
     bool fullscreen = true;
     bool swap_ctrl_cmd = true;
 };
@@ -31,6 +33,7 @@ struct AppOptions {
 
     bool cursor_scale_set = false;
     bool quality_set = false;
+    bool frame_gen_set = false;
     bool fullscreen_set = false;
     bool swap_ctrl_cmd_set = false;
 

@@ -55,6 +55,9 @@ if(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/win_ui/viewer_app.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/win_ui/main_win.cpp"
     )
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/win_ui/d3d_frame_interpolator.cpp")
+        list(APPEND WIN_UI_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/win_ui/d3d_frame_interpolator.cpp")
+    endif()
 
     add_executable(mac-mirror-viewer WIN32 ${WIN_UI_SOURCES})
     set_target_properties(mac-mirror-viewer PROPERTIES OUTPUT_NAME "mac-mirror-viewer")

@@ -49,6 +49,7 @@ private:
     void AdjustCursorScale(float delta);
     void SetCursorScaleFromSliderX(float client_x);
     void CycleQualityMode();
+    void CycleFrameGenMode();
     void ToggleSwapCtrlCmd();
     void PersistUiPrefs();
 

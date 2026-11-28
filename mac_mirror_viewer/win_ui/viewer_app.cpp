@@ -297,6 +297,21 @@ void ViewerApp::CycleQualityMode() {
     needs_render_ = true;
 }
 
+void ViewerApp::CycleFrameGenMode() {
+    options_.prefs.frame_gen_mode = NextFrameGenMode(options_.prefs.frame_gen_mode);
+    if (options_.prefs.frame_gen_mode != FrameGenMode::Off) {
+        renderer_.ResetScrollAnimation();
+    }
+    PersistUiPrefs();
+
+    if (!show_modal_) {
+        hud_wanted_ = true;
+        hud_last_active_ms_ = NowMs();
+        hud_peek_duration_ms_ = 1500;
+    }
+    needs_render_ = true;
+}
+
 void ViewerApp::ToggleSwapCtrlCmd() {
     if (session_) {
         key_mapper_.ReleaseAll(session_.get());
@@ -853,7 +868,9 @@ void ViewerApp::HandleRemoteMouseWheel(float x, float y, int delta, bool horizon
         if (horizontal) {
             session_->SendWheelEvent(rx, ry, 0, steps, remote_button_mask_);
         } else {
-            renderer_.NotifyVerticalWheel(now_ms, steps);
+            if (options_.prefs.frame_gen_mode == FrameGenMode::Off) {
+                renderer_.NotifyVerticalWheel(now_ms, steps);
+            }
             session_->SendWheelEvent(rx, ry, steps, 0, remote_button_mask_);
         }
     }
@@ -1110,6 +1127,8 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                     SetCursorScaleFromSliderX(mx);
                 } else if (hit_regions_.hud_quality_button.contains(mx, my)) {
                     CycleQualityMode();
+                } else if (hit_regions_.hud_framegen_button.contains(mx, my)) {
+                    CycleFrameGenMode();
                 } else if (hit_regions_.hud_keymap_button.contains(mx, my)) {
                     ToggleSwapCtrlCmd();
                 } else if (hit_regions_.hud_window_button.contains(mx, my)) {
@@ -1231,6 +1250,11 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
                 }
                 if (wparam == 'K') {
                     ToggleSwapCtrlCmd();
+                    return 0;
+                }
+                if (wparam == 'G') {
+                    if (session_) key_mapper_.ReleaseAll(session_.get());
+                    CycleFrameGenMode();
                     return 0;
                 }
                 if (wparam == VK_OEM_PLUS || wparam == VK_ADD || wparam == '=' || wparam == '+') {
@@ -1423,7 +1447,11 @@ void ViewerApp::UpdateAnimationsAndTimers(uint64_t now_ms) {
         needs_render_ = true;
     }
 
-    if (renderer_.AdvanceScrollAnimation(now_ms)) {
+    if (options_.prefs.frame_gen_mode == FrameGenMode::Off) {
+        if (renderer_.AdvanceScrollAnimation(now_ms)) {
+            needs_render_ = true;
+        }
+    } else if (!show_modal_ && renderer_.IsFrameGenAnimating(options_.prefs.frame_gen_mode, now_ms)) {
         needs_render_ = true;
     }
 
@@ -1449,6 +1477,8 @@ void ViewerApp::RenderNow() {
     ui.fullscreen = options_.prefs.fullscreen;
     ui.swap_ctrl_cmd = options_.prefs.swap_ctrl_cmd;
     ui.cursor_scale = options_.prefs.cursor_scale;
+    ui.frame_gen_mode = options_.prefs.frame_gen_mode;
+    ui.now_ms = now_ms;
     ui.mouse_x = mouse_x_;
     ui.mouse_y = mouse_y_;
     ui.mouse_in_window = mouse_in_window_;
@@ -1466,7 +1496,7 @@ void ViewerApp::RenderNow() {
     ui.waiting_for_auth_input = waiting_for_auth_input_;
     ui.show_advanced_settings = show_advanced_settings_;
     ui.focused_field = focused_field_;
-    ui.caret_visible = ((NowMs() / 500u) % 2u) == 0u;
+    ui.caret_visible = ((now_ms / 500u) % 2u) == 0u;
     ui.username_text = modal_username_;
     ui.password_char_count = modal_password_.size();
     ui.target_host_text = modal_host_text_;
@@ -1491,7 +1521,7 @@ int ViewerApp::Run(HINSTANCE hinstance) {
     }
 
     // Persist initial non-sensitive UI preferences if explicitly passed via CLI.
-    if (options_.cursor_scale_set || options_.quality_set ||
+    if (options_.cursor_scale_set || options_.quality_set || options_.frame_gen_set ||
         options_.fullscreen_set || options_.swap_ctrl_cmd_set) {
         PersistUiPrefs();
     }
@@ -1529,12 +1559,16 @@ int ViewerApp::Run(HINSTANCE hinstance) {
             continue;
         }
 
+        const bool fg_animating =
+            !show_modal_ && renderer_.IsFrameGenAnimating(options_.prefs.frame_gen_mode, now_ms);
+        const bool scroll_animating =
+            (options_.prefs.frame_gen_mode == FrameGenMode::Off) && renderer_.IsScrollAnimating();
         const bool animating =
             std::fabs(hud_reveal_ - ((!show_modal_ && hud_wanted_) ? 1.0f : 0.0f)) > 0.004f ||
-            renderer_.IsScrollAnimating();
+            scroll_animating || fg_animating;
         DWORD wait_ms = 200;
         if (animating) {
-            wait_ms = renderer_.IsScrollAnimating() ? 8 : 12;
+            wait_ms = (scroll_animating || fg_animating) ? 8 : 12;
         } else if (pending_clipboard_retries_ > 0) {
             wait_ms = 50;
         } else if (!show_modal_ && hud_wanted_) {

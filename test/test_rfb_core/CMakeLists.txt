@@ -9,7 +9,7 @@ set(RFB_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../mac_mirror_viewer/core_clien
 set(RFB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../mac_mirror_viewer/include")
 set(WIN_UI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../mac_mirror_viewer/win_ui")
 
-add_executable(test_rfb_core
+set(TEST_SOURCES
     test_rfb_core.cpp
     "${RFB_CORE_DIR}/miniz.c"
     "${RFB_CORE_DIR}/rfb_adaptive.cpp"
@@ -19,6 +19,11 @@ add_executable(test_rfb_core
     "${RFB_CORE_DIR}/rfb_transport.cpp"
     "${WIN_UI_DIR}/cli_options.cpp"
 )
+if(EXISTS "${WIN_UI_DIR}/d3d_frame_interpolator.cpp")
+    list(APPEND TEST_SOURCES "${WIN_UI_DIR}/d3d_frame_interpolator.cpp")
+endif()
+
+add_executable(test_rfb_core ${TEST_SOURCES})
 
 target_include_directories(test_rfb_core PRIVATE
     "${RFB_INCLUDE_DIR}"
@@ -28,7 +33,7 @@ target_include_directories(test_rfb_core PRIVATE
 
 if(WIN32)
     target_compile_definitions(test_rfb_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(test_rfb_core PRIVATE ws2_32 bcrypt)
+    target_link_libraries(test_rfb_core PRIVATE ws2_32 bcrypt d3d11 dxgi d2d1 uuid)
     if(MINGW)
         target_link_options(test_rfb_core PRIVATE -static -static-libgcc -static-libstdc++)
     endif()

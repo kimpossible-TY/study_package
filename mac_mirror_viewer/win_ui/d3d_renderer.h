@@ -18,8 +18,15 @@
 #include <string>
 #include <vector>
 
+#include "frame_gen_mode.h"
 #include "rfb_session.h"
 #include "scroll_smoother.h"
+#if __has_include("d3d_frame_interpolator.h")
+#include "d3d_frame_interpolator.h"
+#define MAC_MIRROR_HAS_FRAME_INTERPOLATOR 1
+#else
+#define MAC_MIRROR_HAS_FRAME_INTERPOLATOR 0
+#endif
 
 namespace mac_mirror {
 
@@ -49,6 +56,8 @@ struct RenderUiState {
     bool fullscreen = true;
     bool swap_ctrl_cmd = true;
     float cursor_scale = 1.8f;
+    FrameGenMode frame_gen_mode = FrameGenMode::Off;
+    uint64_t now_ms = 0;
 
     float mouse_x = 0.0f;
     float mouse_y = 0.0f;
@@ -93,6 +102,7 @@ struct UiHitRegions {
     RectF hud_slider_track;
     RectF hud_slider_hit_box;
     RectF hud_quality_button;
+    RectF hud_framegen_button;
     RectF hud_keymap_button;
     RectF hud_window_button;
     RectF hud_exit_button;
@@ -126,6 +136,16 @@ public:
     }
     void ResetScrollAnimation() noexcept {
         scroll_interp_.Reset();
+    }
+
+    bool IsFrameGenAnimating(FrameGenMode mode, uint64_t now_ms) const noexcept {
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+        return frame_interp_.IsAnimating(mode, now_ms);
+#else
+        (void)mode;
+        (void)now_ms;
+        return false;
+#endif
     }
 
     // Renders background, remote Mac texture, Login Modal / Floating Pill HUD, and vector macOS cursor.
@@ -190,6 +210,9 @@ private:
     uint64_t uploaded_frame_gen_ = 0;
     std::vector<uint8_t> prev_fb_bgra_;
     ScrollMotionInterpolator scroll_interp_;
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+    D3DFrameInterpolator frame_interp_;
+#endif
 
     IDWriteFactory* dwrite_factory_ = nullptr;
     float text_dpi_scale_ = 0.0f;

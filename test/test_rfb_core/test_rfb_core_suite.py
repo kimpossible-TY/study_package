@@ -72,6 +72,9 @@ class TestRfbCoreSuite(unittest.TestCase):
             str(WIN_UI_DIR / "cli_options.cpp"),
             str(miniz_obj),
         ]
+        fg_cpp = WIN_UI_DIR / "d3d_frame_interpolator.cpp"
+        if os.path.exists(fg_cpp):
+            cpp_sources.append(str(fg_cpp))
         subprocess.run(
             [
                 gxx,
@@ -86,6 +89,10 @@ class TestRfbCoreSuite(unittest.TestCase):
                 *cpp_sources,
                 "-lws2_32",
                 "-lbcrypt",
+                "-ld3d11",
+                "-ldxgi",
+                "-ld2d1",
+                "-luuid",
                 "-o",
                 str(exe_path),
             ],
@@ -134,6 +141,9 @@ class TestRfbCoreSuite(unittest.TestCase):
                 str(WIN_UI_DIR / "cli_options.cpp"),
                 str(miniz_obj),
             ]
+            fg_cpp = WIN_UI_DIR / "d3d_frame_interpolator.cpp"
+            if os.path.exists(fg_cpp):
+                cpp_sources.append(str(fg_cpp))
             subprocess.run(
                 [
                     cxx,
@@ -194,6 +204,9 @@ class TestRfbCoreSuite(unittest.TestCase):
                 str(WIN_UI_DIR / "cli_options.cpp"),
                 str(miniz_obj),
             ]
+            fg_cpp = WIN_UI_DIR / "d3d_frame_interpolator.cpp"
+            if os.path.exists(fg_cpp):
+                cpp_sources.append(str(fg_cpp))
             subprocess.run(
                 [
                     mingw_cxx,
@@ -211,6 +224,10 @@ class TestRfbCoreSuite(unittest.TestCase):
                     "-static-libstdc++",
                     "-lws2_32",
                     "-lbcrypt",
+                    "-ld3d11",
+                    "-ldxgi",
+                    "-ld2d1",
+                    "-luuid",
                     "-o",
                     str(exe_path),
                 ],
@@ -237,6 +254,9 @@ class TestRfbCoreSuite(unittest.TestCase):
                     "bcrypt.dll",
                     "advapi32.dll",
                     "user32.dll",
+                    "d3d11.dll",
+                    "dxgi.dll",
+                    "d2d1.dll",
                 }
                 for dll in dlls:
                     self.assertTrue(

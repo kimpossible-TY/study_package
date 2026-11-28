@@ -124,6 +124,7 @@ std::string SerializeUiPrefsJson(const UiPrefs& prefs) {
     oss << "{\n"
         << "  \"cursor_scale\": " << scale_buf << ",\n"
         << "  \"quality_mode\": \"" << mode_str << "\",\n"
+        << "  \"frame_gen\": \"" << FrameGenModeToString(prefs.frame_gen_mode) << "\",\n"
         << "  \"fullscreen\": " << (prefs.fullscreen ? "true" : "false") << ",\n"
         << "  \"swap_ctrl_cmd\": " << (prefs.swap_ctrl_cmd ? "true" : "false") << "\n"
         << "}\n";
@@ -149,6 +150,18 @@ bool ParseUiPrefsJson(const std::string& json_text, UiPrefs* out_prefs) {
         if (end_q != std::string::npos) {
             std::string val = ToLowerAscii(json_text.substr(qual_pos + 1, end_q - (qual_pos + 1)));
             parsed.quality_mode = ParseQualityMode(val);
+        }
+    }
+
+    size_t fg_pos = FindJsonKeyColon(json_text, "frame_gen");
+    if (fg_pos != std::string::npos && fg_pos < json_text.size() && json_text[fg_pos] == '"') {
+        size_t end_q = json_text.find('"', fg_pos + 1);
+        if (end_q != std::string::npos) {
+            std::string val = ToLowerAscii(TrimAscii(json_text.substr(fg_pos + 1, end_q - (fg_pos + 1))));
+            FrameGenMode fg = parsed.frame_gen_mode;
+            if (TryParseFrameGenMode(val, &fg)) {
+                parsed.frame_gen_mode = fg;
+            }
         }
     }
 
@@ -387,6 +400,17 @@ bool ParseCommandLineArgs(const std::vector<std::string>& args, AppOptions* opti
             }
             options->prefs.quality_mode = ParseQualityMode(low);
             options->quality_set = true;
+        } else if (flag == "--frame-gen") {
+            std::string val;
+            if (!consume_value(&val)) return false;
+            const std::string low = ToLowerAscii(TrimAscii(val));
+            FrameGenMode fg = FrameGenMode::Off;
+            if (!TryParseFrameGenMode(low, &fg)) {
+                options->error_message = "Invalid --frame-gen mode (expected off|flow|neural): " + val;
+                return false;
+            }
+            options->prefs.frame_gen_mode = fg;
+            options->frame_gen_set = true;
         } else if (flag == "--auto-user") {
             std::string val;
             if (!consume_value(&val)) return false;
@@ -417,6 +441,7 @@ std::string FormatUsageText() {
            "  --socks5 <host:port>       Optional SOCKS5 proxy (e.g. 127.0.0.1:1055)\n"
            "  --cursor-scale <1.0..4.0>  Vector macOS cursor scale (default: 1.8)\n"
            "  --quality <mode>           adaptive | sharp | turbo (default: adaptive)\n"
+           "  --frame-gen <mode>         off | flow | neural (default: off)\n"
            "  --windowed                 Start in windowed mode instead of borderless fullscreen\n"
            "  --swap-ctrl-cmd            Swap Windows Ctrl and macOS Command (default: on)\n"
            "  --no-swap-ctrl-cmd         Keep Windows Ctrl as macOS Control and Win as Command\n"
