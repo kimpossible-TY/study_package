@@ -339,9 +339,11 @@ private:
     }
 
     bool SendWireSetEncodings(std::string* err) {
+        // RFC 6143 §7.5.2: list CopyRect first so servers prefer 4-byte region copies
+        // for scrolling code/documents over re-encoding pixel strips.
         static constexpr int32_t kEncodings[] = {
-            rfb_encoding::kZRLE,
             rfb_encoding::kCopyRect,
+            rfb_encoding::kZRLE,
             rfb_encoding::kZlib,
             rfb_encoding::kHextile,
             rfb_encoding::kRaw,
@@ -809,6 +811,33 @@ private:
                     return;
                 }
                 uint16_t num_rects = ReadBE16(fbu_hdr + 1);
+
+                // Early-pipelined FramebufferUpdateRequest:
+                // Once the server has started streaming this FramebufferUpdate, our previous
+                // request is already satisfied on the server. Immediately dispatch the next
+                // incremental request before downloading/decoding all rectangles so it travels
+                // over high-RTT TCP/DERP in parallel with the current frame payload.
+                // Skip pipelining whenever a SetPixelFormat change or explicit full refresh is
+                // pending so RFC 6143 §7.5.1 safe-point ordering is strictly preserved.
+                bool pipelined_next_fbur = false;
+                AdaptiveQualityController::TimePoint pipelined_sent_time{};
+                if (!stop_requested_.load(std::memory_order_acquire)) {
+                    QualityDecision pipe_decision{};
+                    {
+                        std::lock_guard<std::mutex> qlock(ctrl_mutex_);
+                        pipe_decision = adaptive_.PeekDecision(
+                            AdaptiveQualityController::Clock::now(), current_bpp);
+                    }
+                    if (!pipe_decision.format_changed && !pipe_decision.request_full_refresh) {
+                        if (!SendWireFramebufferUpdateRequest(true, 0, 0, cur_w, cur_h, &err)) {
+                            ReportError("Connection lost pipelining FramebufferUpdateRequest: " + err, false);
+                            return;
+                        }
+                        pipelined_next_fbur = true;
+                        pipelined_sent_time = AdaptiveQualityController::Clock::now();
+                    }
+                }
+
                 std::vector<Rect> frame_rects;
                 frame_rects.reserve(num_rects);
                 bool frame_resized = false;
@@ -852,12 +881,14 @@ private:
                     }
                 }
 
-                fbur_in_flight = false;
-
                 {
                     std::lock_guard<std::mutex> qlock(ctrl_mutex_);
                     adaptive_.OnUpdateCompleted(AdaptiveQualityController::Clock::now());
+                    if (pipelined_next_fbur && !frame_resized) {
+                        adaptive_.OnUpdateRequestSent(pipelined_sent_time, false);
+                    }
                 }
+                fbur_in_flight = (pipelined_next_fbur && !frame_resized);
 
                 if (frame_resized || !frame_rects.empty()) {
                     uint64_t new_gen = 0;

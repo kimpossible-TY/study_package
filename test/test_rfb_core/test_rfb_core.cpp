@@ -714,6 +714,8 @@ void TestEndToEndRfbSessionOverSocks5() {
     std::atomic<bool> auth_verified_on_server{false};
     std::mutex srv_clip_mtx;
     std::string server_received_cut_text;
+    std::atomic<bool> copyrect_first_on_wire{false};
+    std::atomic<bool> pipelined_fbur_before_payload{false};
 
     // Mock Tailscale SOCKS5 server forwarding to mock screensharingd
     std::thread socks_thread([&]() {
@@ -847,25 +849,49 @@ void TestEndToEndRfbSessionOverSocks5() {
                 uint16_t nenc = static_cast<uint16_t>((hdr[1] << 8) | hdr[2]);
                 std::vector<uint8_t> encs(nenc * 4u);
                 if (!RecvAllPosix(cfd, encs.data(), encs.size())) break;
+                if (nenc >= 2) {
+                    auto read_be32 = [](const uint8_t* p) -> int32_t {
+                        return static_cast<int32_t>(
+                            (static_cast<uint32_t>(p[0]) << 24) |
+                            (static_cast<uint32_t>(p[1]) << 16) |
+                            (static_cast<uint32_t>(p[2]) << 8) |
+                            static_cast<uint32_t>(p[3]));
+                    };
+                    if (read_be32(encs.data()) == rfb_encoding::kCopyRect &&
+                        read_be32(encs.data() + 4) == rfb_encoding::kZRLE) {
+                        copyrect_first_on_wire.store(true);
+                    }
+                }
             } else if (cmsg == 3) {
                 uint8_t rest[9];
                 if (!RecvAllPosix(cfd, rest, 9)) break;
                 if (rest[0] == 0) {
-                    // Non-incremental request -> send ZRLE solid frame (B=0x33, G=0x66, R=0x99)
+                    // Non-incremental request -> send 4-byte FramebufferUpdate header FIRST
+                    // and verify the client immediately pipelines the next incremental FBUR
+                    // before the rectangle payload even finishes streaming!
+                    uint8_t fbu_hdr[4] = {0u, 0u, 0u, 1u};  // FramebufferUpdate, 1 rect
+                    if (!SendAllPosix(cfd, fbu_hdr, sizeof(fbu_hdr))) break;
+
+                    uint8_t pipe_req[10];
+                    if (!RecvAllPosix(cfd, pipe_req, sizeof(pipe_req))) break;
+                    if (pipe_req[0] == 3u && pipe_req[1] == 1u) {
+                        pipelined_fbur_before_payload.store(true);
+                    }
+
                     mz_stream zs{};
                     mz_deflateInit(&zs, MZ_DEFAULT_COMPRESSION);
                     std::vector<uint8_t> tile = {1u, 0x33u, 0x66u, 0x99u};
                     auto comp = DeflateSyncFlush(&zs, tile);
                     mz_deflateEnd(&zs);
 
-                    std::vector<uint8_t> fbu = {0u, 0u, 0u, 1u};  // FramebufferUpdate, 1 rect
-                    AppendBE16(&fbu, 0);
-                    AppendBE16(&fbu, 0);
-                    AppendBE16(&fbu, 64);
-                    AppendBE16(&fbu, 40);
-                    AppendBE32(&fbu, static_cast<uint32_t>(rfb_encoding::kZRLE));
-                    fbu.insert(fbu.end(), comp.begin(), comp.end());
-                    SendAllPosix(cfd, fbu.data(), fbu.size());
+                    std::vector<uint8_t> rect_body;
+                    AppendBE16(&rect_body, 0);
+                    AppendBE16(&rect_body, 0);
+                    AppendBE16(&rect_body, 64);
+                    AppendBE16(&rect_body, 40);
+                    AppendBE32(&rect_body, static_cast<uint32_t>(rfb_encoding::kZRLE));
+                    rect_body.insert(rect_body.end(), comp.begin(), comp.end());
+                    SendAllPosix(cfd, rect_body.data(), rect_body.size());
                 }
             } else if (cmsg == 6) {
                 // ClientCutText (3 padding bytes + BE32 length + text)
@@ -945,6 +971,8 @@ void TestEndToEndRfbSessionOverSocks5() {
     }
     CHECK_TRUE(got_frame);
     CHECK_TRUE(auth_verified_on_server.load());
+    CHECK_TRUE(copyrect_first_on_wire.load());
+    CHECK_TRUE(pipelined_fbur_before_payload.load());
     CHECK_EQ(seen_banner, std::string("RFB 003.889"));
     CHECK_EQ(connected_name, std::string("MacBook-Air"));
 
@@ -1131,6 +1159,101 @@ void TestKeyMapClipboardAndCliOptions() {
     CHECK_TRUE(opts.prefs.swap_ctrl_cmd);
 }
 
+// ============================================================================
+// 7. Wheel-Scroll Translation Interpolator (Code/Document Smooth Scroll)
+// ============================================================================
+void TestScrollMotionInterpolator() {
+    constexpr uint32_t kW = 320;
+    constexpr uint32_t kH = 240;
+    constexpr uint32_t kStride = kW * 4u;
+    const ScrollRegion full_region{0, 0, kW, kH};
+
+    // Synthetic non-periodic code-editor-like texture (unique horizontal stripes per row)
+    auto fill_doc_pattern = [](std::vector<uint8_t>* buf, int y_shift) {
+        buf->assign(static_cast<size_t>(kH) * kStride, 0xFFu);
+        for (uint32_t y = 0; y < kH; ++y) {
+            const int doc_y = static_cast<int>(y) + y_shift;
+            const uint32_t line_idx = static_cast<uint32_t>((doc_y + 10000) / 14);
+            const uint32_t in_line = static_cast<uint32_t>((doc_y + 10000) % 14);
+            const uint32_t line_hash = line_idx * 2654435761u;
+            for (uint32_t x = 0; x < kW; ++x) {
+                uint8_t v = 24u;  // dark editor background
+                if (in_line >= 3 && in_line <= 10) {
+                    const uint32_t col_bit = (line_hash >> ((x / 8u) % 24u)) & 1u;
+                    if (col_bit && ((x % 8u) < 6u)) {
+                        v = static_cast<uint8_t>(160u + ((line_hash >> 24) & 0x3Fu));
+                    }
+                }
+                const size_t off = static_cast<size_t>(y) * kStride + static_cast<size_t>(x) * 4u;
+                (*buf)[off + 0] = v;
+                (*buf)[off + 1] = v;
+                (*buf)[off + 2] = v;
+                (*buf)[off + 3] = 0xFFu;
+            }
+        }
+    };
+
+    std::vector<uint8_t> prev_fb;
+    std::vector<uint8_t> curr_fb;
+    fill_doc_pattern(&prev_fb, 0);
+    fill_doc_pattern(&curr_fb, 48);  // Scrolled down 48px (curr[y] == prev[y + 48])
+
+    // 1. Exact positive and negative vertical scroll detection
+    const int dy_down = ScrollMotionInterpolator::DetectVerticalTranslation(
+        prev_fb.data(), curr_fb.data(), kW, kH, kStride, full_region);
+    CHECK_EQ(dy_down, 48);
+
+    std::vector<uint8_t> up_fb;
+    fill_doc_pattern(&up_fb, -36);  // Scrolled up 36px (curr[y] == prev[y - 36])
+    const int dy_up = ScrollMotionInterpolator::DetectVerticalTranslation(
+        prev_fb.data(), up_fb.data(), kW, kH, kStride, full_region);
+    CHECK_EQ(dy_up, -36);
+
+    // 2. Stage Manager / scaling transform must be rejected (returns 0)
+    std::vector<uint8_t> scaled_fb(static_cast<size_t>(kH) * kStride, 0xFFu);
+    for (uint32_t y = 0; y < kH; ++y) {
+        const uint32_t sy = std::min<uint32_t>(kH - 1u, static_cast<uint32_t>(y * 0.85f));
+        for (uint32_t x = 0; x < kW; ++x) {
+            const uint32_t sx = std::min<uint32_t>(kW - 1u, static_cast<uint32_t>(x * 0.85f));
+            const size_t dst = static_cast<size_t>(y) * kStride + static_cast<size_t>(x) * 4u;
+            const size_t src = static_cast<size_t>(sy) * kStride + static_cast<size_t>(sx) * 4u;
+            std::memcpy(scaled_fb.data() + dst, prev_fb.data() + src, 4u);
+        }
+    }
+    CHECK_EQ(ScrollMotionInterpolator::DetectVerticalTranslation(
+                 prev_fb.data(), scaled_fb.data(), kW, kH, kStride, full_region),
+             0);
+
+    // 3. Wheel gating + smooth decay + continuous accumulation
+    ScrollMotionInterpolator interp;
+    // Without recent wheel input, must NOT activate
+    CHECK_TRUE(!interp.OnFrameUpdated(1000, prev_fb.data(), curr_fb.data(), kW, kH, kStride, full_region));
+    CHECK_TRUE(!interp.IsAnimating());
+
+    // Notify vertical wheel -> activates glide at +48px
+    interp.NotifyVerticalWheel(1050, -1);
+    CHECK_TRUE(interp.OnFrameUpdated(1100, prev_fb.data(), curr_fb.data(), kW, kH, kStride, full_region));
+    CHECK_TRUE(interp.IsAnimating());
+    CHECK_TRUE(interp.state().offset_y > 47.0f && interp.state().offset_y < 49.0f);
+
+    // Advance 32ms (~1 tau -> decays to ~1/e of 48 ≈ 17.6px)
+    CHECK_TRUE(interp.Advance(1132));
+    CHECK_TRUE(interp.state().offset_y > 15.0f && interp.state().offset_y < 21.0f);
+
+    // Consecutive scroll frame accumulates remaining offset smoothly without snapping back
+    std::vector<uint8_t> next_fb;
+    fill_doc_pattern(&next_fb, 96);
+    CHECK_TRUE(interp.OnFrameUpdated(1132, curr_fb.data(), next_fb.data(), kW, kH, kStride, full_region));
+    CHECK_TRUE(interp.state().offset_y > 60.0f && interp.state().offset_y < 70.0f);
+
+    // Eventually settles to 0
+    for (uint64_t t = 1150; t <= 1600; t += 25) {
+        interp.Advance(t);
+    }
+    CHECK_TRUE(!interp.IsAnimating());
+    CHECK_EQ(static_cast<int>(interp.state().offset_y), 0);
+}
+
 }  // namespace
 
 int main() {
@@ -1148,6 +1271,9 @@ int main() {
 
     std::cout << "[test_rfb_core] Running KeyMap, Hangul toggle, Clipboard & CLI options tests...\n";
     TestKeyMapClipboardAndCliOptions();
+
+    std::cout << "[test_rfb_core] Running Wheel-Scroll Translation Interpolator tests...\n";
+    TestScrollMotionInterpolator();
 
 #ifndef _WIN32
     std::cout << "[test_rfb_core] Running end-to-end RFB 003.889 + SOCKS5 session test...\n";

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "rfb_session.h"
+#include "scroll_smoother.h"
 
 namespace mac_mirror {
 
@@ -111,7 +112,21 @@ public:
     bool Resize(uint32_t width, uint32_t height, float dpi_scale);
 
     // Uploads any new dirty rectangles from session if GetFrameGeneration() advanced.
-    void SyncFramebuffer(RfbSession* session);
+    void SyncFramebuffer(RfbSession* session, uint64_t now_ms);
+
+    // Wheel-scroll translation smoothing hooks (no-op on Stage Manager / non-scroll updates).
+    void NotifyVerticalWheel(uint64_t now_ms, int steps_vertical) noexcept {
+        scroll_interp_.NotifyVerticalWheel(now_ms, steps_vertical);
+    }
+    bool AdvanceScrollAnimation(uint64_t now_ms) noexcept {
+        return scroll_interp_.Advance(now_ms);
+    }
+    bool IsScrollAnimating() const noexcept {
+        return scroll_interp_.IsAnimating();
+    }
+    void ResetScrollAnimation() noexcept {
+        scroll_interp_.Reset();
+    }
 
     // Renders background, remote Mac texture, Login Modal / Floating Pill HUD, and vector macOS cursor.
     // Returns true if Present succeeded without occlusion.
@@ -173,6 +188,8 @@ private:
     uint32_t fb_width_ = 0;
     uint32_t fb_height_ = 0;
     uint64_t uploaded_frame_gen_ = 0;
+    std::vector<uint8_t> prev_fb_bgra_;
+    ScrollMotionInterpolator scroll_interp_;
 
     IDWriteFactory* dwrite_factory_ = nullptr;
     float text_dpi_scale_ = 0.0f;

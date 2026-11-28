@@ -373,7 +373,7 @@ bool D3DRenderer::BuildCursorGeometry() {
     return SUCCEEDED(hr);
 }
 
-void D3DRenderer::SyncFramebuffer(RfbSession* session) {
+void D3DRenderer::SyncFramebuffer(RfbSession* session, uint64_t now_ms) {
     if (!session || !d2d_rt_) return;
 
     const uint64_t latest_gen = session->GetFrameGeneration();
@@ -388,9 +388,11 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session) {
         return;
     }
 
+    const size_t expected_bytes = static_cast<size_t>(fb.height) * fb.stride_bytes;
     const bool need_recreate = (!frame_bitmap_ || resized || fb.width != fb_width_ || fb.height != fb_height_);
     if (need_recreate) {
         SafeRelease(frame_bitmap_);
+        scroll_interp_.ResetAnimation();
         D2D1_BITMAP_PROPERTIES bmp_props = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96.0f, 96.0f);
         HRESULT hr = d2d_rt_->CreateBitmap(
@@ -399,14 +401,47 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session) {
             fb_width_ = fb.width;
             fb_height_ = fb.height;
             uploaded_frame_gen_ = fb.generation;
+            prev_fb_bgra_.assign(fb.pixels_bgra, fb.pixels_bgra + expected_bytes);
         }
         return;
+    }
+
+    // Compute dirty bounding box before uploading so wheel-scroll translation detection
+    // can compare prev_fb_bgra_ against the new framebuffer strictly within the changed area.
+    ScrollRegion dirty_bounds{};
+    if (dirty_rects.empty()) {
+        dirty_bounds = ScrollRegion{0, 0, fb.width, fb.height};
+    } else {
+        uint32_t min_x = fb.width;
+        uint32_t min_y = fb.height;
+        uint32_t max_x = 0;
+        uint32_t max_y = 0;
+        for (const Rect& r : dirty_rects) {
+            if (r.w == 0 || r.h == 0 || r.x >= fb.width || r.y >= fb.height) continue;
+            const uint32_t right = std::min<uint32_t>(fb.width, static_cast<uint32_t>(r.x) + r.w);
+            const uint32_t bottom = std::min<uint32_t>(fb.height, static_cast<uint32_t>(r.y) + r.h);
+            if (right <= r.x || bottom <= r.y) continue;
+            min_x = std::min<uint32_t>(min_x, r.x);
+            min_y = std::min<uint32_t>(min_y, r.y);
+            max_x = std::max<uint32_t>(max_x, right);
+            max_y = std::max<uint32_t>(max_y, bottom);
+        }
+        if (max_x > min_x && max_y > min_y) {
+            dirty_bounds = ScrollRegion{min_x, min_y, max_x - min_x, max_y - min_y};
+        }
+    }
+
+    if (prev_fb_bgra_.size() == expected_bytes && dirty_bounds.w > 0 && dirty_bounds.h > 0) {
+        scroll_interp_.OnFrameUpdated(
+            now_ms, prev_fb_bgra_.data(), fb.pixels_bgra, fb.width, fb.height, fb.stride_bytes, dirty_bounds);
     }
 
     if (dirty_rects.empty()) {
         D2D1_RECT_U full_rect = D2D1::RectU(0, 0, fb.width, fb.height);
         frame_bitmap_->CopyFromMemory(&full_rect, fb.pixels_bgra, fb.stride_bytes);
+        prev_fb_bgra_.assign(fb.pixels_bgra, fb.pixels_bgra + expected_bytes);
     } else {
+        const bool update_prev = (prev_fb_bgra_.size() == expected_bytes);
         for (const Rect& r : dirty_rects) {
             if (r.w == 0 || r.h == 0 || r.x >= fb.width || r.y >= fb.height) continue;
             const uint32_t right = std::min<uint32_t>(fb.width, static_cast<uint32_t>(r.x) + r.w);
@@ -417,6 +452,17 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session) {
             const uint8_t* src_ptr =
                 fb.pixels_bgra + static_cast<size_t>(r.y) * fb.stride_bytes + static_cast<size_t>(r.x) * 4u;
             frame_bitmap_->CopyFromMemory(&dst, src_ptr, fb.stride_bytes);
+
+            if (update_prev) {
+                const size_t row_bytes = static_cast<size_t>(right - r.x) * 4u;
+                for (uint32_t row = r.y; row < bottom; ++row) {
+                    const size_t off = static_cast<size_t>(row) * fb.stride_bytes + static_cast<size_t>(r.x) * 4u;
+                    std::memcpy(prev_fb_bgra_.data() + off, fb.pixels_bgra + off, row_bytes);
+                }
+            }
+        }
+        if (!update_prev) {
+            prev_fb_bgra_.assign(fb.pixels_bgra, fb.pixels_bgra + expected_bytes);
         }
     }
     uploaded_frame_gen_ = fb.generation;
@@ -440,17 +486,49 @@ bool D3DRenderer::RenderFrame(const RenderUiState& state, UiHitRegions* out_regi
         const D2D1_RECT_F src_rect =
             D2D1::RectF(0.0f, 0.0f, static_cast<float>(fb_width_), static_cast<float>(fb_height_));
 
-        if (d2d_ctx_) {
-            // Use GPU 4-sample supersampled linear filtering when downscaling Retina framebuffers,
-            // and high-quality cubic filtering when upscaling, for razor-sharp macOS text.
-            const bool is_downscaling = (regions.remote_viewport.width() < static_cast<float>(fb_width_));
-            const D2D1_INTERPOLATION_MODE interp = is_downscaling
-                                                       ? D2D1_INTERPOLATION_MODE_MULTI_SAMPLE_LINEAR
-                                                       : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC;
-            d2d_ctx_->DrawBitmap(frame_bitmap_, &dst_rect, 1.0f, interp, &src_rect, nullptr);
-        } else {
-            d2d_rt_->DrawBitmap(
-                frame_bitmap_, dst_rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, src_rect);
+        auto draw_bmp = [&](const D2D1_RECT_F& dst, const D2D1_RECT_F& src) {
+            if (d2d_ctx_) {
+                const bool is_downscaling = (regions.remote_viewport.width() < static_cast<float>(fb_width_));
+                const D2D1_INTERPOLATION_MODE interp = is_downscaling
+                                                           ? D2D1_INTERPOLATION_MODE_MULTI_SAMPLE_LINEAR
+                                                           : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC;
+                d2d_ctx_->DrawBitmap(frame_bitmap_, &dst, 1.0f, interp, &src, nullptr);
+            } else {
+                d2d_rt_->DrawBitmap(
+                    frame_bitmap_, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, src);
+            }
+        };
+
+        // 1. Always draw the full crisp framebuffer first (fixed UI + newly revealed edge strip).
+        draw_bmp(dst_rect, src_rect);
+
+        // 2. If a wheel-triggered vertical scroll glide is active, smoothly slide ONLY the
+        //    scrolled region inside a tight clip rect at 60/120Hz with 100% original text pixels.
+        const ScrollVisualState& sv = scroll_interp_.state();
+        if (!state.show_modal && sv.active && std::fabs(sv.offset_y) >= ScrollMotionInterpolator::kSettleThresholdPx &&
+            sv.region.w > 0 && sv.region.h > 0) {
+            const float sx = regions.remote_viewport.width() / static_cast<float>(fb_width_);
+            const float sy = regions.remote_viewport.height() / static_cast<float>(fb_height_);
+            const D2D1_RECT_F clip_dst = D2D1::RectF(
+                regions.remote_viewport.left + static_cast<float>(sv.region.x) * sx,
+                regions.remote_viewport.top + static_cast<float>(sv.region.y) * sy,
+                regions.remote_viewport.left + static_cast<float>(sv.region.x + sv.region.w) * sx,
+                regions.remote_viewport.top + static_cast<float>(sv.region.y + sv.region.h) * sy);
+            const float dy_vp = sv.offset_y * sy;
+            const D2D1_RECT_F shifted_dst = D2D1::RectF(
+                clip_dst.left,
+                clip_dst.top + dy_vp,
+                clip_dst.right,
+                clip_dst.bottom + dy_vp);
+            const D2D1_RECT_F region_src = D2D1::RectF(
+                static_cast<float>(sv.region.x),
+                static_cast<float>(sv.region.y),
+                static_cast<float>(sv.region.x + sv.region.w),
+                static_cast<float>(sv.region.y + sv.region.h));
+
+            d2d_rt_->PushAxisAlignedClip(clip_dst, D2D1_ANTIALIAS_MODE_ALIASED);
+            draw_bmp(shifted_dst, region_src);
+            d2d_rt_->PopAxisAlignedClip();
         }
     }
 

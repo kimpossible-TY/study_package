@@ -844,7 +844,8 @@ void ViewerApp::HandleRemoteMouseWheel(float x, float y, int delta, bool horizon
     if (hud_reveal_ > 0.25f && hit_regions_.hud_pill.contains(x, y)) return;
 
     ScrollWheelAccumulator* accum = horizontal ? &wheel_accum_h_ : &wheel_accum_v_;
-    const int steps = accum->Accumulate(delta, NowMs());
+    const uint64_t now_ms = NowMs();
+    const int steps = accum->Accumulate(delta, now_ms);
     if (steps == 0) return;
 
     uint16_t rx = 0, ry = 0;
@@ -852,6 +853,7 @@ void ViewerApp::HandleRemoteMouseWheel(float x, float y, int delta, bool horizon
         if (horizontal) {
             session_->SendWheelEvent(rx, ry, 0, steps, remote_button_mask_);
         } else {
+            renderer_.NotifyVerticalWheel(now_ms, steps);
             session_->SendWheelEvent(rx, ry, steps, 0, remote_button_mask_);
         }
     }
@@ -1421,6 +1423,10 @@ void ViewerApp::UpdateAnimationsAndTimers(uint64_t now_ms) {
         needs_render_ = true;
     }
 
+    if (renderer_.AdvanceScrollAnimation(now_ms)) {
+        needs_render_ = true;
+    }
+
     // Refresh HUD FPS/RTT telemetry every 250ms while HUD is visible, or blink modal caret every 500ms.
     const uint64_t refresh_period = show_modal_ ? 500u : ((hud_reveal_ > 0.01f) ? 250u : 0u);
     if (refresh_period > 0 && now_ms - last_stats_refresh_ms_ >= refresh_period) {
@@ -1432,7 +1438,8 @@ void ViewerApp::UpdateAnimationsAndTimers(uint64_t now_ms) {
 void ViewerApp::RenderNow() {
     if (!hwnd_) return;
 
-    renderer_.SyncFramebuffer(session_.get());
+    const uint64_t now_ms = NowMs();
+    renderer_.SyncFramebuffer(session_.get(), now_ms);
     if (session_) {
         last_rendered_frame_gen_ = session_->GetFrameGeneration();
     }
@@ -1522,10 +1529,12 @@ int ViewerApp::Run(HINSTANCE hinstance) {
             continue;
         }
 
-        const bool animating = std::fabs(hud_reveal_ - ((!show_modal_ && hud_wanted_) ? 1.0f : 0.0f)) > 0.004f;
+        const bool animating =
+            std::fabs(hud_reveal_ - ((!show_modal_ && hud_wanted_) ? 1.0f : 0.0f)) > 0.004f ||
+            renderer_.IsScrollAnimating();
         DWORD wait_ms = 200;
         if (animating) {
-            wait_ms = 12;
+            wait_ms = renderer_.IsScrollAnimating() ? 8 : 12;
         } else if (pending_clipboard_retries_ > 0) {
             wait_ms = 50;
         } else if (!show_modal_ && hud_wanted_) {
