@@ -14,6 +14,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 #else
 #include <arpa/inet.h>
 #include <cerrno>
@@ -302,6 +303,14 @@ void RfbTransport::ApplyLowLatencySocketOptions(NativeSocket sock) noexcept {
     ::setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
     BOOL keepalive = TRUE;
     ::setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
+    // Override Windows' 2-hour default TCP keepalive so zombie/half-open DERP/SOCKS5
+    // sockets are detected in ~20s instead of appearing permanently frozen.
+    tcp_keepalive ka{};
+    ka.onoff = 1;
+    ka.keepalivetime = 10000;     // 10s idle before first probe
+    ka.keepaliveinterval = 3000;  // 3s between probes
+    DWORD bytes_ret = 0;
+    ::WSAIoctl(s, SIO_KEEPALIVE_VALS, &ka, sizeof(ka), nullptr, 0, &bytes_ret, nullptr, nullptr);
 #else
     int fd = static_cast<int>(sock);
     int one = 1;
@@ -312,6 +321,20 @@ void RfbTransport::ApplyLowLatencySocketOptions(NativeSocket sock) noexcept {
         ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &fallback, sizeof(fallback));
     }
     ::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+    int ka_idle = 10;
+    int ka_intvl = 3;
+    int ka_cnt = 3;
+#ifdef TCP_KEEPALIVE
+    ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &ka_idle, sizeof(ka_idle));
+#elif defined(TCP_KEEPIDLE)
+    ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &ka_idle, sizeof(ka_idle));
+#endif
+#ifdef TCP_KEEPINTVL
+    ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &ka_intvl, sizeof(ka_intvl));
+#endif
+#ifdef TCP_KEEPCNT
+    ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &ka_cnt, sizeof(ka_cnt));
+#endif
 #ifdef SO_NOSIGPIPE
     ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
@@ -768,9 +791,10 @@ int RfbTransport::WaitReadable(int timeout_ms, std::string* error_out) {
     return PollSocket(s, false, timeout_ms, error_out);
 }
 
-bool RfbTransport::ReadExact(void* dst, size_t len, std::string* error_out) {
+bool RfbTransport::ReadExact(void* dst, size_t len, std::string* error_out, int idle_timeout_ms) {
     auto* out = static_cast<uint8_t*>(dst);
     size_t offset = 0;
+    auto last_progress = std::chrono::steady_clock::now();
 
     while (offset < len) {
         if (aborted_.load(std::memory_order_acquire)) {
@@ -788,6 +812,7 @@ bool RfbTransport::ReadExact(void* dst, size_t len, std::string* error_out) {
                 rx_tail_ = 0;
             }
             offset += take;
+            last_progress = std::chrono::steady_clock::now();
             continue;
         }
 
@@ -796,6 +821,17 @@ bool RfbTransport::ReadExact(void* dst, size_t len, std::string* error_out) {
             return false;
         }
         if (wr == 0) {
+            if (idle_timeout_ms > 0) {
+                auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - last_progress)
+                                   .count();
+                if (idle_ms >= idle_timeout_ms) {
+                    if (error_out) {
+                        *error_out = "Timed out waiting for remote frame payload (connection stalled)";
+                    }
+                    return false;
+                }
+            }
             continue;
         }
 
@@ -835,6 +871,7 @@ bool RfbTransport::ReadExact(void* dst, size_t len, std::string* error_out) {
             }
             bytes_received_.fetch_add(static_cast<uint64_t>(got), std::memory_order_relaxed);
             offset += static_cast<size_t>(got);
+            last_progress = std::chrono::steady_clock::now();
             continue;
         }
 
@@ -864,6 +901,7 @@ bool RfbTransport::ReadExact(void* dst, size_t len, std::string* error_out) {
         bytes_received_.fetch_add(static_cast<uint64_t>(got), std::memory_order_relaxed);
         rx_head_ = 0;
         rx_tail_ = static_cast<size_t>(got);
+        last_progress = std::chrono::steady_clock::now();
     }
     return true;
 }

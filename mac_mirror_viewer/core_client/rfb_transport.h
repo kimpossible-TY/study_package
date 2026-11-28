@@ -77,8 +77,12 @@ public:
     //  -1 : socket error or Abort() called
     int WaitReadable(int timeout_ms, std::string* error_out = nullptr);
 
-    // Reads exactly `len` bytes into `dst`, blocking until complete, EOF, error, or Abort().
-    bool ReadExact(void* dst, size_t len, std::string* error_out = nullptr);
+    // Reads exactly `len` bytes into `dst`, blocking until complete, EOF, error, Abort(),
+    // or `idle_timeout_ms` elapses without receiving any bytes (0 = no idle timeout).
+    bool ReadExact(void* dst,
+                   size_t len,
+                   std::string* error_out = nullptr,
+                   int idle_timeout_ms = 12000);
 
     // Thread-safe atomic write of `len` bytes to the socket.
     bool SendAll(const void* src, size_t len, std::string* error_out = nullptr);

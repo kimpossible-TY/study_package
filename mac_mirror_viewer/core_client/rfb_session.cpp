@@ -173,6 +173,7 @@ public:
                 AdaptiveQualityController::Clock::now(), x, y, button_mask);
         }
         if (immediate.has_value()) {
+            MarkInputActivity();
             SendWirePointerEvent(immediate->x, immediate->y, immediate->button_mask);
         }
     }
@@ -206,6 +207,7 @@ public:
                 current_button_mask);
         }
         if (immediate.has_value()) {
+            MarkInputActivity();
             SendWireWheelStep(*immediate);
         }
     }
@@ -214,6 +216,7 @@ public:
         if (config_.view_only || GetState() != SessionState::Connected) {
             return;
         }
+        MarkInputActivity();
         uint8_t pkt[8] = {4u, static_cast<uint8_t>(down ? 1u : 0u), 0u, 0u, 0, 0, 0, 0};
         WriteBE32(pkt + 4, keysym);
         transport_.SendAll(pkt, sizeof(pkt));
@@ -713,16 +716,21 @@ private:
         uint16_t cur_w = init_w;
         uint16_t cur_h = init_h;
         bool fbur_in_flight = false;
+        constexpr auto kActiveStallWatchdog = std::chrono::milliseconds(1500);
+        constexpr auto kIdleRearmWatchdog = std::chrono::milliseconds(4000);
 
         if (!SendWireFramebufferUpdateRequest(false, 0, 0, cur_w, cur_h, &err)) {
             ReportError("Failed sending initial FramebufferUpdateRequest: " + err, false);
             return;
         }
         fbur_in_flight = true;
+        auto last_fbur_sent_time = AdaptiveQualityController::Clock::now();
+        auto last_fbu_received_time = last_fbur_sent_time;
+        uint32_t watchdog_nudges = 0;
         {
             std::lock_guard<std::mutex> lock(ctrl_mutex_);
             adaptive_.CommitAppliedFormat(current_bpp, true);
-            adaptive_.OnUpdateRequestSent(AdaptiveQualityController::Clock::now(), false);
+            adaptive_.OnUpdateRequestSent(last_fbur_sent_time, false);
         }
 
         auto reader_fn = [this](void* dst, size_t len, std::string* r_err) -> bool {
@@ -747,12 +755,14 @@ private:
             }
 
             if (due_ptr.has_value() && !config_.view_only) {
+                MarkInputActivity();
                 if (!SendWirePointerEvent(due_ptr->x, due_ptr->y, due_ptr->button_mask)) {
                     ReportError("Connection lost while sending pointer input", false);
                     return;
                 }
             }
             if (due_wheel.has_value() && !config_.view_only) {
+                MarkInputActivity();
                 if (!SendWireWheelStep(*due_wheel)) {
                     ReportError("Connection lost while sending wheel input", false);
                     return;
@@ -780,10 +790,39 @@ private:
                     return;
                 }
                 fbur_in_flight = true;
+                last_fbur_sent_time = AdaptiveQualityController::Clock::now();
                 {
                     std::lock_guard<std::mutex> lock(ctrl_mutex_);
                     adaptive_.CommitAppliedFormat(current_bpp, !incremental);
-                    adaptive_.OnUpdateRequestSent(AdaptiveQualityController::Clock::now(), false);
+                    adaptive_.OnUpdateRequestSent(last_fbur_sent_time, false);
+                }
+            } else {
+                // FBUR stall recovery watchdog:
+                // Under heavy Mac CPU load, screensharingd may drop or coalesce a pipelined
+                // FramebufferUpdateRequest, leaving fbur_in_flight==true forever. Re-arm the
+                // server cleanly after 1.5s when user input occurred (or every 4s when idle,
+                // which costs 0 bytes on a genuinely static desktop).
+                const auto now = AdaptiveQualityController::Clock::now();
+                const auto since_fbur = now - last_fbur_sent_time;
+                const uint64_t last_in_ms = last_input_ms_.load(std::memory_order_acquire);
+                const uint64_t last_fbu_ms = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        last_fbu_received_time.time_since_epoch())
+                        .count());
+                const bool had_input_since_fbu = (last_in_ms > last_fbu_ms);
+                const auto stall_limit = had_input_since_fbu ? kActiveStallWatchdog : kIdleRearmWatchdog;
+
+                if (since_fbur >= stall_limit) {
+                    // On first nudge (or if format change is pending), send incremental=true.
+                    // On repeated stalls with active user input, request a full refresh to force recovery.
+                    const bool force_full =
+                        had_input_since_fbu && (watchdog_nudges >= 1u) && !decision.format_changed;
+                    if (!SendWireFramebufferUpdateRequest(!force_full, 0, 0, cur_w, cur_h, &err)) {
+                        ReportError("Connection lost during stall recovery refresh: " + err, false);
+                        return;
+                    }
+                    last_fbur_sent_time = now;
+                    ++watchdog_nudges;
                 }
             }
 
@@ -881,14 +920,20 @@ private:
                     }
                 }
 
+                const auto completed_now = AdaptiveQualityController::Clock::now();
+                last_fbu_received_time = completed_now;
+                watchdog_nudges = 0;
                 {
                     std::lock_guard<std::mutex> qlock(ctrl_mutex_);
-                    adaptive_.OnUpdateCompleted(AdaptiveQualityController::Clock::now());
+                    adaptive_.OnUpdateCompleted(completed_now);
                     if (pipelined_next_fbur && !frame_resized) {
                         adaptive_.OnUpdateRequestSent(pipelined_sent_time, false);
                     }
                 }
                 fbur_in_flight = (pipelined_next_fbur && !frame_resized);
+                if (fbur_in_flight) {
+                    last_fbur_sent_time = pipelined_sent_time;
+                }
 
                 if (frame_resized || !frame_rects.empty()) {
                     uint64_t new_gen = 0;
@@ -1000,11 +1045,20 @@ private:
     mutable std::mutex ctrl_mutex_;
     AdaptiveQualityController adaptive_;
 
+    void MarkInputActivity() noexcept {
+        const auto ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                AdaptiveQualityController::Clock::now().time_since_epoch())
+                .count());
+        last_input_ms_.store(ms, std::memory_order_release);
+    }
+
     std::atomic<bool> stop_requested_{false};
     std::atomic<SessionState> state_{SessionState::Disconnected};
     std::atomic<uint8_t> active_bpp_{32};
     std::atomic<uint32_t> fb_width_{0};
     std::atomic<uint32_t> fb_height_{0};
+    std::atomic<uint64_t> last_input_ms_{0};
 };
 
 }  // namespace
