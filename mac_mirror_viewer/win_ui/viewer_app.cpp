@@ -509,6 +509,7 @@ void ViewerApp::StopSession() {
 
 void ViewerApp::StartSession() {
     StopSession();
+    renderer_.NotifyUserInteraction();
     if (!session_) {
         session_ = RfbSession::Create();
     }
@@ -848,6 +849,9 @@ void ViewerApp::HandleRemoteMouseButton(float x, float y, uint8_t button_bit, bo
         remote_button_mask_ &= static_cast<uint8_t>(~button_bit);
     }
     if (!session_ || show_modal_) return;
+    if (down) {
+        renderer_.NotifyUserInteraction();
+    }
     uint16_t rx = 0, ry = 0;
     if (MapClientToRemote(x, y, &rx, &ry)) {
         session_->SendPointerEvent(rx, ry, remote_button_mask_);
@@ -857,6 +861,8 @@ void ViewerApp::HandleRemoteMouseButton(float x, float y, uint8_t button_bit, bo
 void ViewerApp::HandleRemoteMouseWheel(float x, float y, int delta, bool horizontal) {
     if (!session_ || show_modal_) return;
     if (hud_reveal_ > 0.25f && hit_regions_.hud_pill.contains(x, y)) return;
+
+    renderer_.NotifyUserInteraction();
 
     ScrollWheelAccumulator* accum = horizontal ? &wheel_accum_h_ : &wheel_accum_v_;
     const uint64_t now_ms = NowMs();
@@ -1315,6 +1321,7 @@ LRESULT ViewerApp::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
             }
 
             if (session_) {
+                renderer_.NotifyUserInteraction();
                 if (key_mapper_.IsRemotePasteShortcut(wparam)) {
                     SyncLocalClipboardToRemote(false);
                 }
@@ -1451,7 +1458,9 @@ void ViewerApp::UpdateAnimationsAndTimers(uint64_t now_ms) {
         if (renderer_.AdvanceScrollAnimation(now_ms)) {
             needs_render_ = true;
         }
-    } else if (!show_modal_ && renderer_.IsFrameGenAnimating(options_.prefs.frame_gen_mode, now_ms)) {
+    } else if (!show_modal_ &&
+               (renderer_.IsFrameGenAnimating(options_.prefs.frame_gen_mode, now_ms) ||
+                renderer_.IsPeriodicLoopLocked(now_ms))) {
         needs_render_ = true;
     }
 
@@ -1559,8 +1568,12 @@ int ViewerApp::Run(HINSTANCE hinstance) {
             continue;
         }
 
+        const bool loop_locked =
+            !show_modal_ && (options_.prefs.frame_gen_mode != FrameGenMode::Off) &&
+            renderer_.IsPeriodicLoopLocked(now_ms);
         const bool fg_animating =
-            !show_modal_ && renderer_.IsFrameGenAnimating(options_.prefs.frame_gen_mode, now_ms);
+            !show_modal_ &&
+            (renderer_.IsFrameGenAnimating(options_.prefs.frame_gen_mode, now_ms) || loop_locked);
         const bool scroll_animating =
             (options_.prefs.frame_gen_mode == FrameGenMode::Off) && renderer_.IsScrollAnimating();
         const bool animating =

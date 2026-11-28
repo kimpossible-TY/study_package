@@ -105,7 +105,7 @@ struct ConnectionConfig {
     std::string host = "100.80.74.94";
     uint16_t port = 5900;
     std::string socks5_proxy;  // Optional "host:port" (e.g. "127.0.0.1:1055"); empty = direct TCP
-    QualityMode initial_quality = QualityMode::Adaptive;
+    QualityMode initial_quality = QualityMode::Turbo;
     bool shared = true;
     bool view_only = false;
 };

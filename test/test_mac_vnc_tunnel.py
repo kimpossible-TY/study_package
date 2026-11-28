@@ -543,6 +543,90 @@ class PeerResolutionAndOrchestrationTests(unittest.TestCase):
             self.assertEqual(terminated, [7777])
             self.assertFalse((state_dir / "mac-mirror-viewer.pid").exists())
 
+    def test_cmd_connect_forwards_quality_and_frame_gen_when_explicitly_set(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / ".tailscale"
+            local_appdata = root / "LocalAppData"
+            viewer_dir = local_appdata / "Programs" / "mac-mirror"
+            viewer_dir.mkdir(parents=True)
+            native_viewer = viewer_dir / "mac-mirror-viewer.exe"
+            native_viewer.write_text("stub-pe", encoding="utf-8")
+
+            ts_dir = root / "tailscale"
+            ts_dir.mkdir()
+            (ts_dir / "tailscale.exe").write_text("stub", encoding="utf-8")
+            (ts_dir / "tailscaled.exe").write_text("stub", encoding="utf-8")
+
+            running_status = {
+                "BackendState": "Running",
+                "Peer": {
+                    "p1": {
+                        "HostName": "kimtaeyoungs-macbook-air-daemon",
+                        "DNSName": "kimtaeyoungs-macbook-air-daemon.tail8adc61.ts.net.",
+                        "TailscaleIPs": ["100.80.74.94"],
+                        "Online": True,
+                    }
+                },
+            }
+            spawned: list[tuple[list[str], bool]] = []
+
+            with (
+                mock.patch.dict(tunnel.os.environ, {"LOCALAPPDATA": str(local_appdata)}, clear=False),
+                mock.patch.object(tunnel, "get_tailscale_status", return_value=running_status),
+                mock.patch.object(
+                    tunnel,
+                    "spawn_background",
+                    side_effect=lambda cmd, log_path, gui=False: spawned.append((cmd, gui)) or mock.Mock(pid=7788),
+                ),
+            ):
+                # Default invocation omits --quality / --frame-gen so native Turbo + Neural defaults apply
+                rc_default = tunnel.main(
+                    [
+                        "--connect",
+                        "--state-dir",
+                        str(state_dir),
+                        "--tailscale-dir",
+                        str(ts_dir),
+                    ]
+                )
+                self.assertEqual(rc_default, 0)
+                self.assertNotIn("--quality", spawned[-1][0])
+                self.assertNotIn("--frame-gen", spawned[-1][0])
+
+                # Explicit --quality and --frame-gen are forwarded to mac-mirror-viewer.exe
+                for fg_mode in ("off", "flow", "neural"):
+                    rc_fg = tunnel.main(
+                        [
+                            "--connect",
+                            "--state-dir",
+                            str(state_dir),
+                            "--tailscale-dir",
+                            str(ts_dir),
+                            "--quality",
+                            "turbo",
+                            "--frame-gen",
+                            fg_mode,
+                        ]
+                    )
+                    self.assertEqual(rc_fg, 0)
+                    self.assertEqual(
+                        spawned[-1][0],
+                        [
+                            str(native_viewer),
+                            "--host",
+                            "100.80.74.94",
+                            "--port",
+                            "5900",
+                            "--socks5",
+                            "127.0.0.1:1055",
+                            "--quality",
+                            "turbo",
+                            "--frame-gen",
+                            fg_mode,
+                        ],
+                    )
+
     def test_cmd_connect_falls_back_to_tigervnc_when_native_viewer_absent_or_forced(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

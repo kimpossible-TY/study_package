@@ -30,6 +30,16 @@
 #define TEST_HAS_NEURAL_FLOW_WEIGHTS 0
 #endif
 
+#if __has_include("../../mac_mirror_viewer/win_ui/periodic_anim_learner.h")
+#include "../../mac_mirror_viewer/win_ui/periodic_anim_learner.h"
+#define TEST_HAS_PERIODIC_ANIM_LEARNER 1
+#elif __has_include("periodic_anim_learner.h")
+#include "periodic_anim_learner.h"
+#define TEST_HAS_PERIODIC_ANIM_LEARNER 1
+#else
+#define TEST_HAS_PERIODIC_ANIM_LEARNER 0
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -1163,9 +1173,14 @@ void TestKeyMapClipboardAndCliOptions() {
     CHECK_EQ(NormalizeLineEndingsToLf("한글\r\n테스트"), std::string("한글\n테스트"));
     CHECK_EQ(NormalizeLineEndingsToCrlf("한글\n테스트"), std::string("한글\r\n테스트"));
 
-    // 10. UiPrefs & CLI flags for swap_ctrl_cmd
+    // 10. UiPrefs & CLI flags for swap_ctrl_cmd & built-in Turbo + Neural defaults
+    ConnectionConfig default_conn{};
+    CHECK_TRUE(default_conn.initial_quality == QualityMode::Turbo);
+
     UiPrefs prefs{};
     CHECK_TRUE(prefs.swap_ctrl_cmd);
+    CHECK_TRUE(prefs.quality_mode == QualityMode::Turbo);
+    CHECK_TRUE(prefs.frame_gen_mode == FrameGenMode::Neural);
     prefs.swap_ctrl_cmd = false;
     std::string serialized = SerializeUiPrefsJson(prefs);
     CHECK_TRUE(serialized.find("\"swap_ctrl_cmd\": false") != std::string::npos);
@@ -1309,11 +1324,13 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
     // 2. ui-prefs.json serialization & round-trip (non-sensitive only!)
     {
         UiPrefs def_prefs{};
-        CHECK_TRUE(def_prefs.frame_gen_mode == FrameGenMode::Off);
-        std::string json_off = SerializeUiPrefsJson(def_prefs);
-        CHECK_TRUE(json_off.find("\"frame_gen\": \"off\"") != std::string::npos);
-        CHECK_TRUE(json_off.find("password") == std::string::npos);
-        CHECK_TRUE(json_off.find("username") == std::string::npos);
+        CHECK_TRUE(def_prefs.quality_mode == QualityMode::Turbo);
+        CHECK_TRUE(def_prefs.frame_gen_mode == FrameGenMode::Neural);
+        std::string json_def = SerializeUiPrefsJson(def_prefs);
+        CHECK_TRUE(json_def.find("\"quality_mode\": \"turbo\"") != std::string::npos);
+        CHECK_TRUE(json_def.find("\"frame_gen\": \"neural\"") != std::string::npos);
+        CHECK_TRUE(json_def.find("password") == std::string::npos);
+        CHECK_TRUE(json_def.find("username") == std::string::npos);
 
         for (FrameGenMode target : {FrameGenMode::Off, FrameGenMode::OpticalFlow, FrameGenMode::Neural}) {
             UiPrefs src{};
@@ -1333,10 +1350,11 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
             CHECK_TRUE(std::fabs(dst.cursor_scale - 2.4f) < 0.05f);
         }
 
-        // Legacy ui-prefs.json without frame_gen preserves default Off
+        // Legacy ui-prefs.json without frame_gen preserves built-in Neural default
         UiPrefs legacy{};
         CHECK_TRUE(ParseUiPrefsJson("{\"cursor_scale\": 1.6, \"quality_mode\": \"adaptive\"}\n", &legacy));
-        CHECK_TRUE(legacy.frame_gen_mode == FrameGenMode::Off);
+        CHECK_TRUE(legacy.quality_mode == QualityMode::Adaptive);
+        CHECK_TRUE(legacy.frame_gen_mode == FrameGenMode::Neural);
 
         // Case-insensitive alias parsing in ui-prefs.json
         UiPrefs alias_prefs{};
@@ -1346,14 +1364,18 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
         CHECK_TRUE(alias_prefs.frame_gen_mode == FrameGenMode::Neural);
     }
 
-    // 3. CLI --frame-gen parsing & help text
+    // 3. CLI --frame-gen & --quality defaults, parsing & help text
     {
         const std::string usage = FormatUsageText();
         CHECK_TRUE(usage.find("--frame-gen") != std::string::npos);
+        CHECK_TRUE(usage.find("(default: turbo)") != std::string::npos);
+        CHECK_TRUE(usage.find("(default: neural)") != std::string::npos);
 
         AppOptions opts{};
+        CHECK_TRUE(!opts.quality_set);
         CHECK_TRUE(!opts.frame_gen_set);
-        CHECK_TRUE(opts.prefs.frame_gen_mode == FrameGenMode::Off);
+        CHECK_TRUE(opts.prefs.quality_mode == QualityMode::Turbo);
+        CHECK_TRUE(opts.prefs.frame_gen_mode == FrameGenMode::Neural);
 
         CHECK_TRUE(ParseCommandLineArgs({"--frame-gen", "flow"}, &opts));
         CHECK_TRUE(opts.frame_gen_set);
@@ -1523,6 +1545,135 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
 #endif
 }
 
+#if TEST_HAS_PERIODIC_ANIM_LEARNER
+// ============================================================================
+// 9. ANC Phase-Locked Periodic Animation Learner (GIF / Spinner Cycle Predictor)
+// ============================================================================
+void TestPeriodicAnimLearner() {
+    constexpr uint32_t kFbW = 320;
+    constexpr uint32_t kFbH = 240;
+    constexpr uint32_t kStride = kFbW * 4u;
+    const AnimRoi roi{40, 36, 96, 96};
+
+    auto render_gif_frame = [&](std::vector<uint8_t>* fb, size_t phase) {
+        fb->assign(static_cast<size_t>(kFbH) * kStride, 18u);
+        for (uint32_t y = 0; y < kFbH; ++y) {
+            for (uint32_t x = 0; x < kFbW; ++x) {
+                (*fb)[static_cast<size_t>(y) * kStride + static_cast<size_t>(x) * 4u + 3u] = 0xFFu;
+            }
+        }
+        for (uint32_t ry = 0; ry < roi.h; ++ry) {
+            for (uint32_t rx = 0; rx < roi.w; ++rx) {
+                uint8_t b = 24u;
+                uint8_t g = 26u;
+                uint8_t r = 30u;
+                switch (phase % 5u) {
+                    case 0u:
+                        if (rx < 48u && ry < 48u) { b = 225u; g = 232u; r = 240u; }
+                        break;
+                    case 1u:
+                        if (rx >= 48u && ry < 48u) { b = 235u; g = 220u; r = 210u; }
+                        break;
+                    case 2u:
+                        if (rx >= 48u && ry >= 48u) { b = 210u; g = 238u; r = 225u; }
+                        break;
+                    case 3u:
+                        if (rx < 48u && ry >= 48u) { b = 240u; g = 215u; r = 235u; }
+                        break;
+                    default:
+                        if (ry >= 30u && ry < 66u) {
+                            const uint8_t stripe = ((rx / 12u) % 2u == 0u) ? 236u : 132u;
+                            b = stripe;
+                            g = static_cast<uint8_t>(stripe - 16u);
+                            r = stripe;
+                        }
+                        break;
+                }
+                const size_t off =
+                    static_cast<size_t>(roi.y + ry) * kStride + static_cast<size_t>(roi.x + rx) * 4u;
+                (*fb)[off + 0u] = b;
+                (*fb)[off + 1u] = g;
+                (*fb)[off + 2u] = r;
+                (*fb)[off + 3u] = 0xFFu;
+            }
+        }
+    };
+
+    PeriodicAnimLearner learner;
+    std::vector<uint8_t> fb;
+
+    // 1. Feed 2 full cycles (10 frames) of a 5-frame synthetic looping GIF with jittery timestamps (~80ms/frame -> 400ms period)
+    const int64_t jitter_ms[10] = {0, -11, 13, -8, 10, -6, 9, -12, 7, 4};
+    uint64_t last_t = 1000u;
+    for (size_t step = 0; step < 10u; ++step) {
+        render_gif_frame(&fb, step % 5u);
+        const int64_t nominal = 1000 + static_cast<int64_t>(step) * 80 + jitter_ms[step];
+        last_t = static_cast<uint64_t>(nominal);
+        learner.ObserveFrame(last_t, fb.data(), kFbW, kFbH, kStride, roi);
+    }
+
+    CHECK_TRUE(learner.IsLocked(last_t));
+    CHECK_EQ(learner.locked_period_frames(), static_cast<size_t>(5));
+    CHECK_TRUE(learner.locked_period_ms() > 300.0 && learner.locked_period_ms() < 500.0);
+
+    // 2. SynthesizeAt produces valid interpolated ROI pixels across network packet gaps
+    AnimRoi synth_roi{};
+    std::vector<uint8_t> synth_early;
+    std::vector<uint8_t> synth_late;
+    CHECK_TRUE(learner.IsLocked(last_t + 45u));
+    CHECK_TRUE(learner.IsLocked(last_t + 185u));
+    CHECK_TRUE(learner.SynthesizeAt(last_t + 45u, &synth_roi, &synth_early));
+    CHECK_TRUE(learner.SynthesizeAt(last_t + 185u, &synth_roi, &synth_late));
+    CHECK_EQ(synth_roi.x, roi.x);
+    CHECK_EQ(synth_roi.y, roi.y);
+    CHECK_EQ(synth_roi.w, roi.w);
+    CHECK_EQ(synth_roi.h, roi.h);
+    CHECK_EQ(synth_early.size(), static_cast<size_t>(roi.w) * roi.h * 4u);
+    CHECK_EQ(synth_late.size(), static_cast<size_t>(roi.w) * roi.h * 4u);
+
+    bool pixels_differ_across_gap = false;
+    for (size_t px = 0; px < static_cast<size_t>(roi.w) * roi.h; ++px) {
+        CHECK_EQ(synth_early[px * 4u + 3u], 0xFFu);
+        CHECK_EQ(synth_late[px * 4u + 3u], 0xFFu);
+        if (synth_early[px * 4u + 0u] != synth_late[px * 4u + 0u] ||
+            synth_early[px * 4u + 1u] != synth_late[px * 4u + 1u] ||
+            synth_early[px * 4u + 2u] != synth_late[px * 4u + 2u]) {
+            pixels_differ_across_gap = true;
+        }
+    }
+    CHECK_TRUE(pixels_differ_across_gap);
+
+    // 3. Residual spike (content change inside ROI) immediately breaks lock in 0ms
+    for (uint32_t ry = 0; ry < roi.h; ++ry) {
+        for (uint32_t rx = 0; rx < roi.w; ++rx) {
+            const size_t off =
+                static_cast<size_t>(roi.y + ry) * kStride + static_cast<size_t>(roi.x + rx) * 4u;
+            fb[off + 0u] = 250u;
+            fb[off + 1u] = 245u;
+            fb[off + 2u] = 252u;
+            fb[off + 3u] = 0xFFu;
+        }
+    }
+    const uint64_t spike_t = last_t + 80u;
+    learner.ObserveFrame(spike_t, fb.data(), kFbW, kFbH, kStride, roi);
+    CHECK_TRUE(!learner.IsLocked(spike_t));
+    CHECK_TRUE(!learner.SynthesizeAt(spike_t + 16u, &synth_roi, &synth_early));
+
+    // 4. Re-lock and verify NotifyUserInteraction() immediately cancels lock in 0ms
+    learner.Reset();
+    uint64_t relock_t = 5000u;
+    for (size_t step = 0; step < 10u; ++step) {
+        render_gif_frame(&fb, step % 5u);
+        relock_t = static_cast<uint64_t>(5000 + static_cast<int64_t>(step) * 80 + jitter_ms[step]);
+        learner.ObserveFrame(relock_t, fb.data(), kFbW, kFbH, kStride, roi);
+    }
+    CHECK_TRUE(learner.IsLocked(relock_t));
+    learner.NotifyUserInteraction();
+    CHECK_TRUE(!learner.IsLocked(relock_t));
+    CHECK_TRUE(!learner.SynthesizeAt(relock_t + 16u, &synth_roi, &synth_early));
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -1546,6 +1697,11 @@ int main() {
 
     std::cout << "[test_rfb_core] Running Frame-Gen CLI/Prefs, Pacer & Neural Flow tests...\n";
     TestFrameGenModeCliPrefsAndInterpolator();
+
+#if TEST_HAS_PERIODIC_ANIM_LEARNER
+    std::cout << "[test_rfb_core] Running Periodic Animation Learner (ANC Loop) tests...\n";
+    TestPeriodicAnimLearner();
+#endif
 
 #ifndef _WIN32
     std::cout << "[test_rfb_core] Running end-to-end RFB 003.889 + SOCKS5 session test...\n";

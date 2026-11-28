@@ -7,6 +7,9 @@
 #include <cstdio>
 
 #include "cli_options.h"
+#if __has_include("periodic_anim_learner.h")
+#include "periodic_anim_learner.h"
+#endif
 
 namespace mac_mirror {
 
@@ -214,6 +217,13 @@ void D3DRenderer::Shutdown() {
 #if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
     frame_interp_.Shutdown();
 #endif
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+    SafeRelease(loop_roi_bitmap_);
+    loop_bmp_w_ = 0;
+    loop_bmp_h_ = 0;
+    anim_learner_.Reset();
+    loop_roi_scratch_.clear();
+#endif
 
     SafeRelease(fmt_title_);
     SafeRelease(fmt_subtitle_);
@@ -276,6 +286,11 @@ bool D3DRenderer::CreateSwapChainResources() {
 void D3DRenderer::ReleaseSwapChainResources() {
 #if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
     frame_interp_.ReleaseRenderTargetInterop();
+#endif
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+    SafeRelease(loop_roi_bitmap_);
+    loop_bmp_w_ = 0;
+    loop_bmp_h_ = 0;
 #endif
     SafeRelease(frame_bitmap_);
     SafeRelease(brush_);
@@ -405,6 +420,12 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session, uint64_t now_ms) {
 #if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
         frame_interp_.ResetPacer();
 #endif
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+        anim_learner_.Reset();
+        SafeRelease(loop_roi_bitmap_);
+        loop_bmp_w_ = 0;
+        loop_bmp_h_ = 0;
+#endif
         D2D1_BITMAP_PROPERTIES bmp_props = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96.0f, 96.0f);
         HRESULT hr = d2d_rt_->CreateBitmap(
@@ -454,6 +475,17 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session, uint64_t now_ms) {
             d2d_rt_, prev_fb_bgra_.data(), fb.pixels_bgra, fb.width, fb.height, fb.stride_bytes, now_ms);
     }
 #endif
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+    if (dirty_bounds.w > 0 && dirty_bounds.h > 0) {
+        anim_learner_.ObserveFrame(
+            now_ms,
+            fb.pixels_bgra,
+            fb.width,
+            fb.height,
+            fb.stride_bytes,
+            AnimRoi{dirty_bounds.x, dirty_bounds.y, dirty_bounds.w, dirty_bounds.h});
+    }
+#endif
 
     if (dirty_rects.empty()) {
         D2D1_RECT_U full_rect = D2D1::RectU(0, 0, fb.width, fb.height);
@@ -501,6 +533,40 @@ bool D3DRenderer::RenderFrame(const RenderUiState& state, UiHitRegions* out_regi
             : nullptr;
 #else
     ID2D1Bitmap* interp_bmp = nullptr;
+#endif
+
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+    AnimRoi loop_roi{};
+    bool has_loop_roi = false;
+    if (!state.show_modal && state.frame_gen_mode != FrameGenMode::Off &&
+        frame_bitmap_ && fb_width_ > 0 && fb_height_ > 0 &&
+        anim_learner_.SynthesizeAt(state.now_ms, &loop_roi, &loop_roi_scratch_) &&
+        loop_roi.w > 0 && loop_roi.h > 0 &&
+        loop_roi.x < fb_width_ && loop_roi.y < fb_height_ &&
+        loop_roi_scratch_.size() >= static_cast<size_t>(loop_roi.w) * loop_roi.h * 4u) {
+        if (!loop_roi_bitmap_ || loop_bmp_w_ != loop_roi.w || loop_bmp_h_ != loop_roi.h) {
+            SafeRelease(loop_roi_bitmap_);
+            loop_bmp_w_ = 0;
+            loop_bmp_h_ = 0;
+            D2D1_BITMAP_PROPERTIES roi_props = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
+                96.0f,
+                96.0f);
+            HRESULT roi_hr = d2d_rt_->CreateBitmap(
+                D2D1::SizeU(loop_roi.w, loop_roi.h), nullptr, 0, &roi_props, &loop_roi_bitmap_);
+            if (SUCCEEDED(roi_hr) && loop_roi_bitmap_) {
+                loop_bmp_w_ = loop_roi.w;
+                loop_bmp_h_ = loop_roi.h;
+            }
+        }
+        if (loop_roi_bitmap_) {
+            D2D1_RECT_U copy_rc = D2D1::RectU(0, 0, loop_roi.w, loop_roi.h);
+            if (SUCCEEDED(loop_roi_bitmap_->CopyFromMemory(
+                    &copy_rc, loop_roi_scratch_.data(), loop_roi.w * 4u))) {
+                has_loop_roi = true;
+            }
+        }
+    }
 #endif
 
     d2d_rt_->BeginDraw();
@@ -565,6 +631,26 @@ bool D3DRenderer::RenderFrame(const RenderUiState& state, UiHitRegions* out_regi
                 d2d_rt_->PopAxisAlignedClip();
             }
         }
+
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+        if (has_loop_roi && loop_roi_bitmap_) {
+            const uint32_t vis_w = std::min<uint32_t>(loop_roi.w, fb_width_ - loop_roi.x);
+            const uint32_t vis_h = std::min<uint32_t>(loop_roi.h, fb_height_ - loop_roi.y);
+            const float sx = regions.remote_viewport.width() / static_cast<float>(fb_width_);
+            const float sy = regions.remote_viewport.height() / static_cast<float>(fb_height_);
+            const D2D1_RECT_F roi_dst = D2D1::RectF(
+                regions.remote_viewport.left + static_cast<float>(loop_roi.x) * sx,
+                regions.remote_viewport.top + static_cast<float>(loop_roi.y) * sy,
+                regions.remote_viewport.left + static_cast<float>(loop_roi.x + vis_w) * sx,
+                regions.remote_viewport.top + static_cast<float>(loop_roi.y + vis_h) * sy);
+            const D2D1_RECT_F roi_src = D2D1::RectF(
+                0.0f,
+                0.0f,
+                static_cast<float>(vis_w),
+                static_cast<float>(vis_h));
+            draw_bmp(loop_roi_bitmap_, roi_dst, roi_src);
+        }
+#endif
     }
 
     if (state.show_modal) {
@@ -1052,7 +1138,7 @@ void D3DRenderer::DrawFloatingHud(const RenderUiState& state, UiHitRegions* regi
     x += 10.0f * s;
 
     // 4. [FG:Off / FG:Flow / FG:Neural] Frame-Generation mode pill button
-    RectF fg_btn{x, cy - 14.0f * s, x + 78.0f * s, cy + 14.0f * s};
+    RectF fg_btn{x, cy - 14.0f * s, x + 82.0f * s, cy + 14.0f * s};
     regions->hud_framegen_button = fg_btn;
     const bool fg_hover = fg_btn.contains(state.mouse_x, state.mouse_y);
     D2D1_COLOR_F fg_accent = RgbaHex(0x94A3B8, 1.0f);
@@ -1075,12 +1161,16 @@ void D3DRenderer::DrawFloatingHud(const RenderUiState& state, UiHitRegions* regi
     d2d_rt_->FillRoundedRectangle(fg_rr, brush_);
     brush_->SetColor(fg_border);
     d2d_rt_->DrawRoundedRectangle(fg_rr, brush_, 1.0f * s);
-    DrawTextLine(FrameGenModeHudLabel(state.frame_gen_mode),
+    std::wstring fg_label = FrameGenModeHudLabel(state.frame_gen_mode);
+    if (state.frame_gen_mode != FrameGenMode::Off && IsPeriodicLoopLocked(state.now_ms)) {
+        fg_label.push_back(L'+');
+    }
+    DrawTextLine(fg_label,
                  fg_fmt,
                  fg_btn,
                  fg_accent,
                  DWRITE_TEXT_ALIGNMENT_CENTER);
-    x += 88.0f * s;
+    x += 91.0f * s;
     draw_divider(x);
     x += 10.0f * s;
 

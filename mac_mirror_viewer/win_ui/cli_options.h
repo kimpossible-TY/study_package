@@ -19,8 +19,8 @@ inline float ClampCursorScale(float scale) noexcept {
 // Shared-PC security guarantee: NEVER add username, password, or secret fields here.
 struct UiPrefs {
     float cursor_scale = 1.8f;
-    QualityMode quality_mode = QualityMode::Adaptive;
-    FrameGenMode frame_gen_mode = FrameGenMode::Off;
+    QualityMode quality_mode = QualityMode::Turbo;
+    FrameGenMode frame_gen_mode = FrameGenMode::Neural;
     bool fullscreen = true;
     bool swap_ctrl_cmd = true;
 };

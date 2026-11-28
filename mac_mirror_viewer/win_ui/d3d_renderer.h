@@ -27,6 +27,12 @@
 #else
 #define MAC_MIRROR_HAS_FRAME_INTERPOLATOR 0
 #endif
+#if __has_include("periodic_anim_learner.h")
+#include "periodic_anim_learner.h"
+#define MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER 1
+#else
+#define MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER 0
+#endif
 
 namespace mac_mirror {
 
@@ -148,6 +154,21 @@ public:
 #endif
     }
 
+    void NotifyUserInteraction() noexcept {
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+        anim_learner_.NotifyUserInteraction();
+#endif
+    }
+
+    bool IsPeriodicLoopLocked(uint64_t now_ms) const noexcept {
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+        return anim_learner_.IsLocked(now_ms);
+#else
+        (void)now_ms;
+        return false;
+#endif
+    }
+
     // Renders background, remote Mac texture, Login Modal / Floating Pill HUD, and vector macOS cursor.
     // Returns true if Present succeeded without occlusion.
     bool RenderFrame(const RenderUiState& state, UiHitRegions* out_regions);
@@ -212,6 +233,13 @@ private:
     ScrollMotionInterpolator scroll_interp_;
 #if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
     D3DFrameInterpolator frame_interp_;
+#endif
+#if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER
+    PeriodicAnimLearner anim_learner_;
+    ID2D1Bitmap* loop_roi_bitmap_ = nullptr;
+    uint32_t loop_bmp_w_ = 0;
+    uint32_t loop_bmp_h_ = 0;
+    std::vector<uint8_t> loop_roi_scratch_;
 #endif
 
     IDWriteFactory* dwrite_factory_ = nullptr;

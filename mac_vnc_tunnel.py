@@ -818,6 +818,8 @@ def cmd_connect(args: argparse.Namespace) -> int:
             native_extra_args.extend(["--cursor-scale", str(args.cursor_scale)])
         if args.quality:
             native_extra_args.extend(["--quality", args.quality])
+        if args.frame_gen:
+            native_extra_args.extend(["--frame-gen", args.frame_gen])
         if args.viewer_arg:
             native_extra_args.extend(args.viewer_arg)
         launch_mac_mirror_viewer(
@@ -1020,6 +1022,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("adaptive", "sharp", "turbo"),
         default=None,
         help="Quality mode for mac-mirror-viewer.exe.",
+    )
+    parser.add_argument(
+        "--frame-gen",
+        choices=("off", "flow", "neural"),
+        default=None,
+        help="Frame generation mode for mac-mirror-viewer.exe.",
     )
     parser.add_argument(
         "--viewer-arg",
