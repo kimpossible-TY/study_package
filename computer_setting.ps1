@@ -876,3 +876,36 @@ Write-Host "PowerToys was installed from the Scoop extras bucket for 64-bit Wind
 Write-Host "PowerShell profiles saved for Windows PowerShell and PowerShell 7. Open a new shell to load all settings." -ForegroundColor Green
 Write-Host "Mac screen mirroring shortcut: mac-mirror (stop & sign out before leaving: mac-mirror-stop --logout)." -ForegroundColor Green
 Write-Host "Mac SSH shortcut: mac (connect Dev Tunnel first). Run wac before leaving to remove managed profile settings." -ForegroundColor Green
+
+if (!$SkipMacMirror) {
+    Invoke-Step "Opening Lagrangian web viewer in Microsoft Edge via Tailscale SOCKS5..." {
+        $EdgeCandidates = @()
+        foreach ($ProgramRoot in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+            if (![string]::IsNullOrWhiteSpace($ProgramRoot)) {
+                $EdgeCandidates += (Join-Path $ProgramRoot "Microsoft\Edge\Application\msedge.exe")
+            }
+        }
+        $EdgeExe = $EdgeCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if (!$EdgeExe) {
+            $EdgeCmd = Get-Command "msedge.exe" -ErrorAction SilentlyContinue
+            if ($EdgeCmd) {
+                $EdgeExe = $EdgeCmd.Source
+            }
+        }
+
+        if ($EdgeExe) {
+            $TempRoot = if (![string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else { [IO.Path]::GetTempPath() }
+            $EdgeUserDataDir = Join-Path $TempRoot "ts-edge"
+            $EdgeArgs = "--proxy-server=`"socks5://127.0.0.1:1055`" --user-data-dir=`"$EdgeUserDataDir`" `"https://kimtaeyoungs-macbook-air-daemon.tail8adc61.ts.net:8769/`""
+            try {
+                Start-Process -FilePath $EdgeExe -ArgumentList $EdgeArgs
+            }
+            catch {
+                Write-Warning "Failed to launch Microsoft Edge for Lagrangian web viewer: $_"
+            }
+        }
+        else {
+            Write-Warning "Microsoft Edge (msedge.exe) was not found; skipping automatic browser launch."
+        }
+    }
+}

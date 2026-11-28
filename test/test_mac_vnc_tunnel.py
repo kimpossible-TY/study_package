@@ -637,6 +637,9 @@ class BootstrapScriptContractTests(unittest.TestCase):
         self.assertIn("[switch]$Update", script)
         self.assertIn("skipping download", script)
         self.assertIn("skipping scoop update", script)
+        self.assertIn("msedge.exe", script)
+        self.assertIn("socks5://127.0.0.1:1055", script)
+        self.assertIn("https://kimtaeyoungs-macbook-air-daemon.tail8adc61.ts.net:8769/", script)
 
         workflow = (REPO_ROOT / ".github" / "workflows" / "mac-mirror-viewer.yml").read_text(encoding="utf-8")
         self.assertIn("mac-mirror-viewer.exe", workflow)
