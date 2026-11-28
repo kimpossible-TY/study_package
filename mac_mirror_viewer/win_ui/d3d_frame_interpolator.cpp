@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 #ifdef _WIN32
 #include <dxgi.h>
@@ -34,6 +35,29 @@ namespace mac_mirror {
 // ============================================================================
 // FrameGenPacer (cross-platform pure C++17)
 // ============================================================================
+
+bool FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(uint32_t fb_w,
+                                                     uint32_t fb_h,
+                                                     uint32_t dirty_w,
+                                                     uint32_t dirty_h) noexcept {
+    if (fb_w == 0u || fb_h == 0u || dirty_w == 0u || dirty_h == 0u) {
+        return true;
+    }
+    const uint64_t fb_area = static_cast<uint64_t>(fb_w) * static_cast<uint64_t>(fb_h);
+    const uint64_t dirty_area = static_cast<uint64_t>(dirty_w) * static_cast<uint64_t>(dirty_h);
+    if (dirty_area < 64u * 64u) {
+        return true;
+    }
+    return (dirty_area * 100u < fb_area * 2u) && dirty_w < 192u && dirty_h < 192u;
+}
+
+bool FrameGenPacer::ShouldReuseCachedSynthesis(bool cached_valid,
+                                               float alpha,
+                                               float cached_alpha,
+                                               FrameGenMode mode,
+                                               FrameGenMode cached_mode) noexcept {
+    return cached_valid && (mode == cached_mode) && (std::fabs(alpha - cached_alpha) < 0.03f);
+}
 
 void FrameGenPacer::Reset() noexcept {
     last_frame_ms_ = 0;
@@ -1382,8 +1406,15 @@ bool D3DFrameInterpolator::Initialize(ID3D11Device* device, ID3D11DeviceContext*
 
 void D3DFrameInterpolator::Shutdown() {
     available_ = false;
+    has_gpu_frame_ = false;
     has_frame_pair_ = false;
-    coarse_flow_dirty_ = false;
+    pyr_prev_valid_ = false;
+    pyr_curr_valid_ = false;
+    flow_ready_ = false;
+    neural_ready_ = false;
+    cached_out_valid_ = false;
+    cached_out_alpha_ = -1.0f;
+    cached_out_mode_ = FrameGenMode::Off;
     pacer_.Reset();
 
     ReleaseRenderTargetInterop();
@@ -1417,6 +1448,7 @@ void D3DFrameInterpolator::Shutdown() {
 void D3DFrameInterpolator::ReleaseRenderTargetInterop() {
     SafeRelease(out_d2d_bitmap_);
     bound_d2d_rt_ = nullptr;
+    cached_out_valid_ = false;
 }
 
 bool D3DFrameInterpolator::CompilePipelineShaders() {
@@ -1609,6 +1641,14 @@ void D3DFrameInterpolator::ReleaseFrameResources() {
     qtr_height_ = 0;
     eig_width_ = 0;
     eig_height_ = 0;
+
+    has_gpu_frame_ = false;
+    has_frame_pair_ = false;
+    pyr_prev_valid_ = false;
+    pyr_curr_valid_ = false;
+    flow_ready_ = false;
+    neural_ready_ = false;
+    cached_out_valid_ = false;
 }
 
 bool D3DFrameInterpolator::EnsureFrameResources(uint32_t width, uint32_t height) {
@@ -1750,13 +1790,14 @@ void D3DFrameInterpolator::UpdatePassParams(float alpha,
 }
 
 bool D3DFrameInterpolator::PushFramePair(ID2D1RenderTarget* d2d_rt,
-                                         const uint8_t* prev_bgra,
                                          const uint8_t* curr_bgra,
                                          uint32_t width,
                                          uint32_t height,
                                          uint32_t stride_bytes,
+                                         const std::vector<Rect>& dirty_rects,
+                                         const Rect& dirty_bounds,
                                          uint64_t now_ms) {
-    if (!available_ || !device_ || !context_ || !prev_bgra || !curr_bgra ||
+    if (!available_ || !device_ || !context_ || !curr_bgra ||
         width < 16u || height < 16u || stride_bytes < width * 4u) {
         return false;
     }
@@ -1766,15 +1807,131 @@ bool D3DFrameInterpolator::PushFramePair(ID2D1RenderTarget* d2d_rt,
         return false;
     }
 
-    context_->UpdateSubresource(prev_tex_, 0, nullptr, prev_bgra, stride_bytes, 0);
-    context_->UpdateSubresource(curr_tex_, 0, nullptr, curr_bgra, stride_bytes, 0);
+    // First frame after creation or dimension change: seed GPU ping-pong pair cleanly.
+    if (!has_gpu_frame_) {
+        context_->UpdateSubresource(curr_tex_, 0, nullptr, curr_bgra, stride_bytes, 0);
+        context_->CopyResource(prev_tex_, curr_tex_);
+        if (d2d_rt) {
+            EnsureSharedBitmap(d2d_rt);
+        }
+        has_gpu_frame_ = true;
+        has_frame_pair_ = false;
+        pyr_prev_valid_ = false;
+        pyr_curr_valid_ = false;
+        flow_ready_ = false;
+        neural_ready_ = false;
+        cached_out_valid_ = false;
+        return true;
+    }
+
+    uint64_t dirty_area_sum = 0;
+    bool has_valid_dirty_rect = false;
+    for (const Rect& r : dirty_rects) {
+        if (r.w == 0u || r.h == 0u || r.x >= width || r.y >= height) {
+            continue;
+        }
+        const uint32_t right = std::min<uint32_t>(width, static_cast<uint32_t>(r.x) + r.w);
+        const uint32_t bottom = std::min<uint32_t>(height, static_cast<uint32_t>(r.y) + r.h);
+        if (right <= r.x || bottom <= r.y) {
+            continue;
+        }
+        has_valid_dirty_rect = true;
+        dirty_area_sum += static_cast<uint64_t>(right - r.x) * static_cast<uint64_t>(bottom - r.y);
+    }
+
+    auto upload_dirty_rects = [&](ID3D11Texture2D* dst_tex) {
+        for (const Rect& r : dirty_rects) {
+            if (r.w == 0u || r.h == 0u || r.x >= width || r.y >= height) {
+                continue;
+            }
+            const uint32_t right = std::min<uint32_t>(width, static_cast<uint32_t>(r.x) + r.w);
+            const uint32_t bottom = std::min<uint32_t>(height, static_cast<uint32_t>(r.y) + r.h);
+            if (right <= r.x || bottom <= r.y) {
+                continue;
+            }
+            D3D11_BOX box = {};
+            box.left = r.x;
+            box.top = r.y;
+            box.front = 0u;
+            box.right = right;
+            box.bottom = bottom;
+            box.back = 1u;
+            const uint8_t* src_ptr =
+                curr_bgra + static_cast<size_t>(r.y) * stride_bytes + static_cast<size_t>(r.x) * 4u;
+            context_->UpdateSubresource(dst_tex, 0, &box, src_ptr, stride_bytes, 0);
+        }
+    };
+
+    // Optimization 2: Skip FrameGen on tiny dirty-rect updates (cursor blink, clock tick, single-char typing).
+    // Update `curr_tex_` IN PLACE so GPU textures stay 100% synced without swapping `prev_tex_` or triggering GPU passes.
+    if (FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(width, height, dirty_bounds.w, dirty_bounds.h)) {
+        bool updated_curr = false;
+        if (has_valid_dirty_rect) {
+            upload_dirty_rects(curr_tex_);
+            updated_curr = true;
+        } else if (dirty_bounds.w > 0u && dirty_bounds.h > 0u &&
+                   dirty_bounds.x < width && dirty_bounds.y < height) {
+            const uint32_t right = std::min<uint32_t>(width, static_cast<uint32_t>(dirty_bounds.x) + dirty_bounds.w);
+            const uint32_t bottom = std::min<uint32_t>(height, static_cast<uint32_t>(dirty_bounds.y) + dirty_bounds.h);
+            if (right > dirty_bounds.x && bottom > dirty_bounds.y) {
+                D3D11_BOX box = {};
+                box.left = dirty_bounds.x;
+                box.top = dirty_bounds.y;
+                box.front = 0u;
+                box.right = right;
+                box.bottom = bottom;
+                box.back = 1u;
+                const uint8_t* src_ptr = curr_bgra + static_cast<size_t>(dirty_bounds.y) * stride_bytes +
+                                         static_cast<size_t>(dirty_bounds.x) * 4u;
+                context_->UpdateSubresource(curr_tex_, 0, &box, src_ptr, stride_bytes, 0);
+                updated_curr = true;
+            }
+        }
+
+        if (updated_curr) {
+            pyr_curr_valid_ = false;
+            cached_out_valid_ = false;
+        }
+        if (!pacer_.IsAnimating(now_ms, FrameGenMode::Neural)) {
+            pacer_.Reset();
+            has_frame_pair_ = false;
+            flow_ready_ = false;
+            neural_ready_ = false;
+        }
+        if (d2d_rt) {
+            EnsureSharedBitmap(d2d_rt);
+        }
+        return true;
+    }
+
+    // Optimization 1: GPU Ping-Pong swap (`prev_tex_ <-> curr_tex_` and `pyr_prev_* <-> pyr_curr_*`).
+    // `prev_tex_` now holds frame N-1 in VRAM with 0 bytes uploaded, and `pyr_prev_*` is preserved if valid!
+    std::swap(prev_tex_, curr_tex_);
+    std::swap(prev_srv_, curr_srv_);
+    std::swap(pyr_prev_half_, pyr_curr_half_);
+    std::swap(pyr_prev_qtr_, pyr_curr_qtr_);
+    std::swap(pyr_prev_eig_, pyr_curr_eig_);
+
+    pyr_prev_valid_ = pyr_curr_valid_;
+    pyr_curr_valid_ = false;
+    flow_ready_ = false;
+    neural_ready_ = false;
+    cached_out_valid_ = false;
+
+    const uint64_t total_area = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    if (has_valid_dirty_rect && (dirty_area_sum * 100u < total_area * 65u)) {
+        // Fast VRAM-to-VRAM copy preserves untouched pixels from frame N-1, then upload only dirty rects.
+        context_->CopyResource(curr_tex_, prev_tex_);
+        upload_dirty_rects(curr_tex_);
+    } else {
+        context_->UpdateSubresource(curr_tex_, 0, nullptr, curr_bgra, stride_bytes, 0);
+    }
 
     if (d2d_rt) {
         EnsureSharedBitmap(d2d_rt);
     }
 
     has_frame_pair_ = true;
-    coarse_flow_dirty_ = true;
     pacer_.OnNewFrame(now_ms);
     return true;
 }
@@ -1782,7 +1939,7 @@ bool D3DFrameInterpolator::PushFramePair(ID2D1RenderTarget* d2d_rt,
 ID2D1Bitmap* D3DFrameInterpolator::SynthesizeBeforeD2D(ID2D1RenderTarget* d2d_rt,
                                                        FrameGenMode mode,
                                                        uint64_t now_ms) {
-    if (!available_ || !has_frame_pair_ || !d2d_rt || mode == FrameGenMode::Off) {
+    if (!available_ || !has_frame_pair_ || !has_gpu_frame_ || !d2d_rt || mode == FrameGenMode::Off) {
         return nullptr;
     }
 
@@ -1793,6 +1950,13 @@ ID2D1Bitmap* D3DFrameInterpolator::SynthesizeBeforeD2D(ID2D1RenderTarget* d2d_rt
 
     if (!EnsureSharedBitmap(d2d_rt) || !out_d2d_bitmap_) {
         return nullptr;
+    }
+
+    // Optimization 3a: Fast zero-pass cursor redraw path (`WM_MOUSEMOVE` between display ticks).
+    if (FrameGenPacer::ShouldReuseCachedSynthesis(
+            cached_out_valid_, alpha, cached_out_alpha_, mode, cached_out_mode_) &&
+        out_d2d_bitmap_ != nullptr) {
+        return out_d2d_bitmap_;
     }
 
     ScopedD3D11State saved_state(context_);
@@ -1824,53 +1988,51 @@ ID2D1Bitmap* D3DFrameInterpolator::SynthesizeBeforeD2D(ID2D1RenderTarget* d2d_rt
 
     unbind_all();
 
-    // Pass 1 (3-Level Pyramid) & Pass 2 (Coarse-to-Fine 1/8 -> 1/4 -> 1/2 Flow):
-    // Depend only on (prev_tex_, curr_tex_) and are cached ONCE per RFB frame pair!
-    if (coarse_flow_dirty_) {
+    auto build_pyramid = [&](ID3D11ShaderResourceView* src_srv,
+                             RenderTarget2D& half_rt,
+                             RenderTarget2D& qtr_rt,
+                             RenderTarget2D& eig_rt) {
         // Pass 1a: Full -> Half (1/2)
-        UpdatePassParams(alpha, use_neural, tex_width_, tex_height_, half_width_, half_height_);
+        UpdatePassParams(0.5f, use_neural, tex_width_, tex_height_, half_width_, half_height_);
         context_->RSSetViewports(1, &half_vp);
         context_->PSSetShader(ps_downsample_half_, nullptr, 0);
-
-        context_->OMSetRenderTargets(1, &pyr_prev_half_.rtv, nullptr);
-        context_->PSSetShaderResources(0, 1, &prev_srv_);
-        context_->Draw(3, 0);
-        unbind_all();
-
-        context_->OMSetRenderTargets(1, &pyr_curr_half_.rtv, nullptr);
-        context_->PSSetShaderResources(0, 1, &curr_srv_);
+        context_->OMSetRenderTargets(1, &half_rt.rtv, nullptr);
+        context_->PSSetShaderResources(0, 1, &src_srv);
         context_->Draw(3, 0);
         unbind_all();
 
         // Pass 1b (Level 1): Half -> Quarter (1/4)
-        UpdatePassParams(alpha, use_neural, half_width_, half_height_, qtr_width_, qtr_height_);
+        UpdatePassParams(0.5f, use_neural, half_width_, half_height_, qtr_width_, qtr_height_);
         context_->RSSetViewports(1, &qtr_vp);
         context_->PSSetShader(ps_downsample_pyr_, nullptr, 0);
-
-        context_->OMSetRenderTargets(1, &pyr_prev_qtr_.rtv, nullptr);
-        context_->PSSetShaderResources(0, 1, &pyr_prev_half_.srv);
-        context_->Draw(3, 0);
-        unbind_all();
-
-        context_->OMSetRenderTargets(1, &pyr_curr_qtr_.rtv, nullptr);
-        context_->PSSetShaderResources(0, 1, &pyr_curr_half_.srv);
+        context_->OMSetRenderTargets(1, &qtr_rt.rtv, nullptr);
+        context_->PSSetShaderResources(0, 1, &half_rt.srv);
         context_->Draw(3, 0);
         unbind_all();
 
         // Pass 1b (Level 2): Quarter -> Eighth (1/8)
-        UpdatePassParams(alpha, use_neural, qtr_width_, qtr_height_, eig_width_, eig_height_);
+        UpdatePassParams(0.5f, use_neural, qtr_width_, qtr_height_, eig_width_, eig_height_);
         context_->RSSetViewports(1, &eig_vp);
         context_->PSSetShader(ps_downsample_pyr_, nullptr, 0);
-
-        context_->OMSetRenderTargets(1, &pyr_prev_eig_.rtv, nullptr);
-        context_->PSSetShaderResources(0, 1, &pyr_prev_qtr_.srv);
+        context_->OMSetRenderTargets(1, &eig_rt.rtv, nullptr);
+        context_->PSSetShaderResources(0, 1, &qtr_rt.srv);
         context_->Draw(3, 0);
         unbind_all();
+    };
 
-        context_->OMSetRenderTargets(1, &pyr_curr_eig_.rtv, nullptr);
-        context_->PSSetShaderResources(0, 1, &pyr_curr_qtr_.srv);
-        context_->Draw(3, 0);
-        unbind_all();
+    // Pass 1 (3-Level Pyramid): Build `pyr_prev_*` ONLY if not already valid via ping-pong swap!
+    if (!pyr_prev_valid_) {
+        build_pyramid(prev_srv_, pyr_prev_half_, pyr_prev_qtr_, pyr_prev_eig_);
+        pyr_prev_valid_ = true;
+    }
+    if (!pyr_curr_valid_) {
+        build_pyramid(curr_srv_, pyr_curr_half_, pyr_curr_qtr_, pyr_curr_eig_);
+        pyr_curr_valid_ = true;
+    }
+
+    // Pass 2 (Coarse-to-Fine 1/8 -> 1/4 -> 1/2 Flow): Cached ONCE per RFB frame pair!
+    if (!flow_ready_) {
+        UpdatePassParams(0.5f, use_neural, qtr_width_, qtr_height_, eig_width_, eig_height_);
 
         // Pass 2a: Coarse Optical Flow at 1/8 (+-16 eig-px = +-128 full-res px)
         context_->RSSetViewports(1, &eig_vp);
@@ -1899,15 +2061,13 @@ ID2D1Bitmap* D3DFrameInterpolator::SynthesizeBeforeD2D(ID2D1RenderTarget* d2d_rt
         context_->Draw(3, 0);
         unbind_all();
 
-        coarse_flow_dirty_ = false;
+        flow_ready_ = true;
     }
 
-    // Update shared pass constants for current alpha & active mode (Neural vs OpticalFlow).
-    UpdatePassParams(alpha, use_neural, half_width_, half_height_, tex_width_, tex_height_);
-
-    // Pass 3 (Neural mode only): 3-Layer 8 -> 16 -> 16 -> 7 Residual CNN at 1/2 Resolution.
-    ID3D11ShaderResourceView* active_flow_srv = flow_half_coarse_.srv;
-    if (use_neural) {
+    // Optimization 3b: Run 3-Layer 8 -> 16 -> 16 -> 7 Neural Residual CNN ONCE per RFB frame pair
+    // at canonical `alpha = 0.5f` (preserving full v2 refined flow, occlusion, text protection & RGB repair).
+    if (use_neural && !neural_ready_) {
+        UpdatePassParams(0.5f, true, half_width_, half_height_, tex_width_, tex_height_);
         context_->RSSetViewports(1, &half_vp);
 
         // Pass 3a: Conv1 (8 -> 16 + ReLU) -> 4 MRTs (`hidden1_[0..3]`)
@@ -1951,10 +2111,14 @@ ID2D1Bitmap* D3DFrameInterpolator::SynthesizeBeforeD2D(ID2D1RenderTarget* d2d_rt
         context_->Draw(3, 0);
         unbind_all();
 
-        active_flow_srv = flow_half_refined_.srv;
+        neural_ready_ = true;
     }
 
     // Pass 4: Full-Resolution Bidirectional Occlusion-Aware Warp + RGB Disocclusion Repair -> `out_rt_`
+    // Runs at exact current `alpha` using cached refined/coarse flow + cached RGB residual!
+    UpdatePassParams(alpha, use_neural, half_width_, half_height_, tex_width_, tex_height_);
+    ID3D11ShaderResourceView* active_flow_srv =
+        use_neural ? flow_half_refined_.srv : flow_half_coarse_.srv;
     context_->RSSetViewports(1, &full_vp);
     context_->OMSetRenderTargets(1, &out_rt_.rtv, nullptr);
     context_->PSSetShader(ps_warp_, nullptr, 0);
@@ -1966,6 +2130,10 @@ ID2D1Bitmap* D3DFrameInterpolator::SynthesizeBeforeD2D(ID2D1RenderTarget* d2d_rt
     context_->PSSetShaderResources(0, 4, warp_srvs);
     context_->Draw(3, 0);
     unbind_all();
+
+    cached_out_valid_ = true;
+    cached_out_alpha_ = alpha;
+    cached_out_mode_ = mode;
 
     // `saved_state` destructor restores original D3D11 state cleanly before Direct2D `BeginDraw()` reads `out_rt_.tex`.
     return out_d2d_bitmap_;

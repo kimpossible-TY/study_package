@@ -435,6 +435,16 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session, uint64_t now_ms) {
             fb_height_ = fb.height;
             uploaded_frame_gen_ = fb.generation;
             prev_fb_bgra_.assign(fb.pixels_bgra, fb.pixels_bgra + expected_bytes);
+#if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
+            const Rect full_bounds{
+                0u,
+                0u,
+                static_cast<uint16_t>(std::min<uint32_t>(fb.width, UINT16_MAX)),
+                static_cast<uint16_t>(std::min<uint32_t>(fb.height, UINT16_MAX)),
+            };
+            frame_interp_.PushFramePair(
+                d2d_rt_, fb.pixels_bgra, fb.width, fb.height, fb.stride_bytes, {}, full_bounds, now_ms);
+#endif
         }
         return;
     }
@@ -470,9 +480,15 @@ void D3DRenderer::SyncFramebuffer(RfbSession* session, uint64_t now_ms) {
     }
 
 #if MAC_MIRROR_HAS_FRAME_INTERPOLATOR
-    if (prev_fb_bgra_.size() == expected_bytes) {
+    {
+        const Rect interp_dirty_bounds{
+            static_cast<uint16_t>(std::min<uint32_t>(dirty_bounds.x, UINT16_MAX)),
+            static_cast<uint16_t>(std::min<uint32_t>(dirty_bounds.y, UINT16_MAX)),
+            static_cast<uint16_t>(std::min<uint32_t>(dirty_bounds.w, UINT16_MAX)),
+            static_cast<uint16_t>(std::min<uint32_t>(dirty_bounds.h, UINT16_MAX)),
+        };
         frame_interp_.PushFramePair(
-            d2d_rt_, prev_fb_bgra_.data(), fb.pixels_bgra, fb.width, fb.height, fb.stride_bytes, now_ms);
+            d2d_rt_, fb.pixels_bgra, fb.width, fb.height, fb.stride_bytes, dirty_rects, interp_dirty_bounds, now_ms);
     }
 #endif
 #if MAC_MIRROR_HAS_PERIODIC_ANIM_LEARNER

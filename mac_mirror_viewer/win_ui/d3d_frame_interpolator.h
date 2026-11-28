@@ -13,6 +13,8 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d2d1.h>
+#include <vector>
+#include "rfb_session.h"
 #endif
 
 namespace mac_mirror {
@@ -23,6 +25,16 @@ public:
     static constexpr uint64_t kMinIntervalMs = 20u;
     static constexpr uint64_t kMaxIntervalMs = 140u;
     static constexpr uint64_t kDefaultIntervalMs = 45u;
+
+    static bool ShouldSkipFrameGenForDirtyRegion(uint32_t fb_w,
+                                                 uint32_t fb_h,
+                                                 uint32_t dirty_w,
+                                                 uint32_t dirty_h) noexcept;
+    static bool ShouldReuseCachedSynthesis(bool cached_valid,
+                                           float alpha,
+                                           float cached_alpha,
+                                           FrameGenMode mode,
+                                           FrameGenMode cached_mode) noexcept;
 
     void Reset() noexcept;
     void OnNewFrame(uint64_t now_ms) noexcept;
@@ -49,11 +61,12 @@ public:
     void ReleaseRenderTargetInterop();
 
     bool PushFramePair(ID2D1RenderTarget* d2d_rt,
-                       const uint8_t* prev_bgra,
                        const uint8_t* curr_bgra,
                        uint32_t width,
                        uint32_t height,
                        uint32_t stride_bytes,
+                       const std::vector<Rect>& dirty_rects,
+                       const Rect& dirty_bounds,
                        uint64_t now_ms);
 
     // Must be called BEFORE `d2d_rt->BeginDraw()`.
@@ -64,13 +77,18 @@ public:
                                      uint64_t now_ms);
 
     bool IsAnimating(FrameGenMode mode, uint64_t now_ms) const noexcept {
-        return available_ && pacer_.IsAnimating(now_ms, mode);
+        return available_ && has_frame_pair_ && pacer_.IsAnimating(now_ms, mode);
     }
     bool is_available() const noexcept { return available_; }
     void ResetPacer() noexcept {
         pacer_.Reset();
+        has_gpu_frame_ = false;
         has_frame_pair_ = false;
-        coarse_flow_dirty_ = false;
+        pyr_prev_valid_ = false;
+        pyr_curr_valid_ = false;
+        flow_ready_ = false;
+        neural_ready_ = false;
+        cached_out_valid_ = false;
     }
 
 private:
@@ -93,8 +111,15 @@ private:
                           uint32_t dst_h);
 
     bool available_ = false;
+    bool has_gpu_frame_ = false;
     bool has_frame_pair_ = false;
-    bool coarse_flow_dirty_ = false;
+    bool pyr_prev_valid_ = false;
+    bool pyr_curr_valid_ = false;
+    bool flow_ready_ = false;
+    bool neural_ready_ = false;
+    bool cached_out_valid_ = false;
+    float cached_out_alpha_ = -1.0f;
+    FrameGenMode cached_out_mode_ = FrameGenMode::Off;
     FrameGenPacer pacer_;
 
     uint32_t tex_width_ = 0;

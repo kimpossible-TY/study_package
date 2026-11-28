@@ -1446,6 +1446,35 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
         pacer.Reset();
         CHECK_TRUE(!pacer.IsAnimating(5015, FrameGenMode::Neural));
         CHECK_TRUE(!pacer.SampleAlpha(5015, FrameGenMode::Neural, &alpha));
+
+        // 4b. Tiny dirty-region FrameGen skip filter (skips cursor blink/clock/typing; keeps scrolling/windows)
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(0, 1600, 100, 100));
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 0, 100, 100));
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 0, 100));
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 100, 0));
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 16, 24));   // cursor blink
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 120, 32));  // clock tick
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 100, 40));  // single-line typing
+        CHECK_TRUE(FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 150, 50));  // small badge (<2% & <192px)
+        CHECK_TRUE(!FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 400, 300));  // scrolling editor
+        CHECK_TRUE(!FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 800, 600));  // Stage Manager window
+        CHECK_TRUE(!FrameGenPacer::ShouldSkipFrameGenForDirtyRegion(2560, 1600, 2560, 1600));  // full frame
+
+        // 4c. Cached synthesized frame reuse across WM_MOUSEMOVE redraws
+        CHECK_TRUE(FrameGenPacer::ShouldReuseCachedSynthesis(
+            true, 0.51f, 0.50f, FrameGenMode::Neural, FrameGenMode::Neural));
+        CHECK_TRUE(FrameGenPacer::ShouldReuseCachedSynthesis(
+            true, 0.48f, 0.50f, FrameGenMode::OpticalFlow, FrameGenMode::OpticalFlow));
+        CHECK_TRUE(!FrameGenPacer::ShouldReuseCachedSynthesis(
+            true, 0.531f, 0.50f, FrameGenMode::Neural, FrameGenMode::Neural));
+        CHECK_TRUE(!FrameGenPacer::ShouldReuseCachedSynthesis(
+            true, 0.469f, 0.50f, FrameGenMode::Neural, FrameGenMode::Neural));
+        CHECK_TRUE(!FrameGenPacer::ShouldReuseCachedSynthesis(
+            true, 0.50f, 0.50f, FrameGenMode::Neural, FrameGenMode::OpticalFlow));
+        CHECK_TRUE(!FrameGenPacer::ShouldReuseCachedSynthesis(
+            true, 0.50f, 0.50f, FrameGenMode::OpticalFlow, FrameGenMode::Neural));
+        CHECK_TRUE(!FrameGenPacer::ShouldReuseCachedSynthesis(
+            false, 0.50f, 0.50f, FrameGenMode::Neural, FrameGenMode::Neural));
     }
 #endif
 
