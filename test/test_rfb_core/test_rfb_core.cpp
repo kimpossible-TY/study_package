@@ -1663,6 +1663,210 @@ void TestPeriodicAnimLearner() {
     learner.NotifyUserInteraction();
     CHECK_TRUE(!learner.IsLocked(relock_t));
     CHECK_TRUE(!learner.SynthesizeAt(relock_t + 16u, &synth_roi, &synth_early));
+
+    // 5. 45-frame / 4.5s Long-GIF drop-resilient phase-bucket & progressive gap-fill test
+    auto render_long_gif_frame = [&](std::vector<uint8_t>* out_fb, size_t frame_idx) {
+        constexpr size_t kPeriod = 45u;
+        constexpr double kTwoPi = 6.28318530717958647692;
+        const size_t f = frame_idx % kPeriod;
+        const double angle = kTwoPi * static_cast<double>(f) / static_cast<double>(kPeriod);
+        const double cx = 48.0 + 26.0 * std::cos(angle);
+        const double cy = 48.0 + 26.0 * std::sin(angle);
+        const uint32_t bar_w = 12u + static_cast<uint32_t>((f * 72u) / (kPeriod - 1u));
+        const uint8_t orb_r = static_cast<uint8_t>(160 + static_cast<int>(85.0 * std::sin(angle)));
+        const uint8_t orb_g = static_cast<uint8_t>(160 + static_cast<int>(85.0 * std::cos(angle)));
+        const uint8_t orb_b = static_cast<uint8_t>(220 - static_cast<int>(60.0 * std::sin(angle)));
+
+        out_fb->assign(static_cast<size_t>(kFbH) * kStride, 18u);
+        for (uint32_t y = 0; y < kFbH; ++y) {
+            for (uint32_t x = 0; x < kFbW; ++x) {
+                (*out_fb)[static_cast<size_t>(y) * kStride + static_cast<size_t>(x) * 4u + 3u] = 0xFFu;
+            }
+        }
+        for (uint32_t ry = 0; ry < roi.h; ++ry) {
+            for (uint32_t rx = 0; rx < roi.w; ++rx) {
+                uint8_t b = 22u;
+                uint8_t g = 24u;
+                uint8_t r = 28u;
+                const double dx = static_cast<double>(rx) - cx;
+                const double dy = static_cast<double>(ry) - cy;
+                if (dx * dx + dy * dy <= 14.0 * 14.0) {
+                    b = orb_b;
+                    g = orb_g;
+                    r = orb_r;
+                } else if (ry >= 84u && ry < 92u && rx >= 6u && rx < 6u + bar_w) {
+                    b = 210u;
+                    g = 230u;
+                    r = 240u;
+                }
+                const size_t off =
+                    static_cast<size_t>(roi.y + ry) * kStride + static_cast<size_t>(roi.x + rx) * 4u;
+                (*out_fb)[off + 0u] = b;
+                (*out_fb)[off + 1u] = g;
+                (*out_fb)[off + 2u] = r;
+                (*out_fb)[off + 3u] = 0xFFu;
+            }
+        }
+    };
+
+    auto is_dropped = [](const std::vector<size_t>& drops, size_t idx) -> bool {
+        for (size_t d : drops) {
+            if (d == idx) return true;
+        }
+        return false;
+    };
+
+    const std::vector<size_t> lap1_drops = {5u, 14u, 23u, 32u, 41u};                // 5 dropped -> 40 received
+    const std::vector<size_t> lap2_drops = {2u, 8u, 17u, 21u, 29u, 35u, 39u, 44u};  // 8 different dropped -> 37 received
+
+    PeriodicAnimLearner long_learner;
+    uint64_t long_last_t = 10000u;
+    size_t lap1_received = 0u;
+    size_t lap2_received = 0u;
+    bool observed_lock = false;
+    size_t populated_at_lock = 0u;
+
+    for (size_t lap = 0; lap < 2u; ++lap) {
+        const auto& drops = (lap == 0u) ? lap1_drops : lap2_drops;
+        for (size_t f = 0; f < 45u; ++f) {
+            if (is_dropped(drops, f)) {
+                continue;
+            }
+            const size_t global_idx = lap * 45u + f;
+            const int64_t jitter = static_cast<int64_t>((global_idx * 17u + 5u) % 51u) - 25;
+            long_last_t = static_cast<uint64_t>(10000 + static_cast<int64_t>(global_idx) * 100 + jitter);
+            render_long_gif_frame(&fb, f);
+            long_learner.ObserveFrame(long_last_t, fb.data(), kFbW, kFbH, kStride, roi);
+            if (lap == 0u) {
+                ++lap1_received;
+            } else {
+                ++lap2_received;
+                if (!observed_lock && long_learner.IsLocked(long_last_t)) {
+                    observed_lock = true;
+                    populated_at_lock = long_learner.populated_buckets();
+                }
+            }
+        }
+    }
+
+    CHECK_EQ(lap1_received, static_cast<size_t>(40));
+    CHECK_EQ(lap2_received, static_cast<size_t>(37));
+    CHECK_TRUE(observed_lock);
+    CHECK_TRUE(long_learner.IsLocked(long_last_t));
+    CHECK_TRUE(long_learner.locked_period_ms() >= 4500.0 * 0.95 &&
+               long_learner.locked_period_ms() <= 4500.0 * 1.05);
+    CHECK_TRUE(long_learner.populated_buckets() > populated_at_lock);
+    CHECK_TRUE(long_learner.memory_bytes() > 0u);
+    CHECK_TRUE(long_learner.memory_bytes() <= PeriodicAnimLearner::kMaxMemoryBytes);
+
+    // Synthesize crisp BGRA frames across a 400ms packet stall
+    std::vector<uint8_t> stall_a;
+    std::vector<uint8_t> stall_b;
+    std::vector<uint8_t> stall_c;
+    CHECK_TRUE(long_learner.IsLocked(long_last_t + 400u));
+    CHECK_TRUE(long_learner.SynthesizeAt(long_last_t + 80u, &synth_roi, &stall_a));
+    CHECK_TRUE(long_learner.SynthesizeAt(long_last_t + 220u, &synth_roi, &stall_b));
+    CHECK_TRUE(long_learner.SynthesizeAt(long_last_t + 400u, &synth_roi, &stall_c));
+    CHECK_EQ(stall_a.size(), static_cast<size_t>(roi.w) * roi.h * 4u);
+    CHECK_EQ(stall_c.size(), static_cast<size_t>(roi.w) * roi.h * 4u);
+
+    bool long_stall_differs = false;
+    bool long_has_bright_orb = false;
+    for (size_t px = 0; px < static_cast<size_t>(roi.w) * roi.h; ++px) {
+        CHECK_EQ(stall_a[px * 4u + 3u], 0xFFu);
+        CHECK_EQ(stall_b[px * 4u + 3u], 0xFFu);
+        CHECK_EQ(stall_c[px * 4u + 3u], 0xFFu);
+        if (stall_c[px * 4u + 0u] > 140u || stall_c[px * 4u + 1u] > 140u ||
+            stall_c[px * 4u + 2u] > 140u) {
+            long_has_bright_orb = true;
+        }
+        if (stall_a[px * 4u + 0u] != stall_c[px * 4u + 0u] ||
+            stall_a[px * 4u + 1u] != stall_c[px * 4u + 1u] ||
+            stall_a[px * 4u + 2u] != stall_c[px * 4u + 2u]) {
+            long_stall_differs = true;
+        }
+    }
+    CHECK_TRUE(long_has_bright_orb);
+    CHECK_TRUE(long_stall_differs);
+
+    // Residual content change on long GIF breaks lock in 0ms
+    for (uint32_t ry = 0; ry < roi.h; ++ry) {
+        for (uint32_t rx = 0; rx < roi.w; ++rx) {
+            const size_t off =
+                static_cast<size_t>(roi.y + ry) * kStride + static_cast<size_t>(roi.x + rx) * 4u;
+            fb[off + 0u] = 248u;
+            fb[off + 1u] = 244u;
+            fb[off + 2u] = 250u;
+            fb[off + 3u] = 0xFFu;
+        }
+    }
+    const uint64_t long_spike_t = long_last_t + 100u;
+    long_learner.ObserveFrame(long_spike_t, fb.data(), kFbW, kFbH, kStride, roi);
+    CHECK_TRUE(!long_learner.IsLocked(long_spike_t));
+    CHECK_TRUE(!long_learner.SynthesizeAt(long_spike_t + 16u, &synth_roi, &stall_a));
+
+    // Re-lock long GIF and confirm NotifyUserInteraction() breaks lock in 0ms
+    long_learner.Reset();
+    uint64_t long_relock_t = 30000u;
+    for (size_t step = 0; step < 50u; ++step) {
+        long_relock_t = 30000u + static_cast<uint64_t>(step) * 100u;
+        render_long_gif_frame(&fb, step % 45u);
+        long_learner.ObserveFrame(long_relock_t, fb.data(), kFbW, kFbH, kStride, roi);
+    }
+    CHECK_TRUE(long_learner.IsLocked(long_relock_t));
+    long_learner.NotifyUserInteraction();
+    CHECK_TRUE(!long_learner.IsLocked(long_relock_t));
+    CHECK_TRUE(!long_learner.SynthesizeAt(long_relock_t + 16u, &synth_roi, &stall_a));
+
+    // 6. Static unchanging ROI (including tiny low-amplitude noise) must NEVER lock
+    PeriodicAnimLearner static_learner;
+    uint64_t static_t = 50000u;
+    for (size_t step = 0; step < 24u; ++step) {
+        fb.assign(static_cast<size_t>(kFbH) * kStride, 40u);
+        const uint8_t jitter_luma = static_cast<uint8_t>(40u + (step % 2u) * 2u);
+        for (uint32_t ry = 0; ry < roi.h; ++ry) {
+            for (uint32_t rx = 0; rx < roi.w; ++rx) {
+                const size_t off =
+                    static_cast<size_t>(roi.y + ry) * kStride + static_cast<size_t>(roi.x + rx) * 4u;
+                fb[off + 0u] = jitter_luma;
+                fb[off + 1u] = jitter_luma;
+                fb[off + 2u] = jitter_luma;
+                fb[off + 3u] = 0xFFu;
+            }
+        }
+        static_t = 50000u + static_cast<uint64_t>(step) * 100u;
+        static_learner.ObserveFrame(static_t, fb.data(), kFbW, kFbH, kStride, roi);
+    }
+    CHECK_TRUE(!static_learner.IsLocked(static_t));
+
+    // 7. Strict 64 MB memory budget check even at maximum 512x512 ROI
+    {
+        constexpr uint32_t kBigFbW = 1024u;
+        constexpr uint32_t kBigFbH = 1024u;
+        constexpr uint32_t kBigStride = kBigFbW * 4u;
+        const AnimRoi big_roi{64u, 64u, 512u, 512u};
+        std::vector<uint8_t> big_fb(static_cast<size_t>(kBigFbH) * kBigStride, 16u);
+        PeriodicAnimLearner big_learner;
+        for (size_t step = 0; step < 80u; ++step) {
+            const uint32_t band_y = static_cast<uint32_t>((step * 6u) % 480u);
+            std::fill(big_fb.begin(), big_fb.end(), 16u);
+            for (uint32_t ry = band_y; ry < band_y + 32u; ++ry) {
+                uint8_t* row = big_fb.data() + static_cast<size_t>(big_roi.y + ry) * kBigStride +
+                               static_cast<size_t>(big_roi.x) * 4u;
+                std::memset(row, static_cast<int>(180u + (step % 40u)), 512u * 4u);
+            }
+            big_learner.ObserveFrame(
+                1000u + static_cast<uint64_t>(step) * 100u,
+                big_fb.data(),
+                kBigFbW,
+                kBigFbH,
+                kBigStride,
+                big_roi);
+            CHECK_TRUE(big_learner.memory_bytes() <= PeriodicAnimLearner::kMaxMemoryBytes);
+        }
+        CHECK_TRUE(big_learner.memory_bytes() > 0u);
+        CHECK_TRUE(big_learner.memory_bytes() <= PeriodicAnimLearner::kMaxMemoryBytes);
+    }
 }
 #endif
 

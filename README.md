@@ -66,10 +66,11 @@ immediately). `mac-mirror` performs the full one-shot sequence:
    - Starts out of the box at maximum smoothness with **`Turbo`** quality (`16-bit RGB565`
      high-FPS `ZRLE` + `CopyRect`) and **`FG:Neural`** hybrid frame generation (3-level
      `1/8→1/4→1/2` multi-scale coarse-to-fine optical flow + 3-layer `8→16→16→7` residual
-     CNN with RGB disocclusion repair, plus AirPods-ANC-inspired
-     phase-locked periodic animation cycle prediction for smooth 60/120Hz GIFs and spinners
-     over jittery links with instant residual/input cancellation; shows `FG:Neural+` /
-     `FG:Flow+` on the HUD when loop-locked).
+     CNN with RGB disocclusion repair, plus AirPods-ANC-inspired drop-resilient
+     phase-bucket periodic animation caching (compact `RGB565`, up to 12 s long GIFs,
+     strict 64 MB memory cap, progressive cross-lap gap filling, and 0 ms residual/input
+     cancellation for smooth 60/120Hz GIFs and spinners over jittery links; shows
+     `FG:Neural+` / `FG:Flow+` on the HUD when loop-locked).
    - Renders a zero-latency anti-aliased vector macOS cursor (`1.0x`–`4.0x`, default
      `1.8x`; `Ctrl+Alt+=` / `Ctrl+Alt+-`) and an auto-hide floating pill HUD at the top
      edge or via `Ctrl+Alt+Space` (`FPS · ms`, cursor scale slider, `Adaptive` /
