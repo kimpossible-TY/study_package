@@ -64,8 +64,9 @@ immediately). `mac-mirror` performs the full one-shot sequence:
      Screen Sharing Apple Diffie-Hellman (`SecurityType 30`) and `VncAuth` (`2`), plus
      a `⚙` toggle for Target Host / SOCKS5 Proxy settings.
    - Starts out of the box at maximum smoothness with **`Turbo`** quality (`16-bit RGB565`
-     high-FPS `ZRLE` + `CopyRect`) and **`FG:Neural`** hybrid frame generation (`Optical Flow`
-     + `8→8→4` neural CNN residual/occlusion refinement, plus AirPods-ANC-inspired
+     high-FPS `ZRLE` + `CopyRect`) and **`FG:Neural`** hybrid frame generation (3-level
+     `1/8→1/4→1/2` multi-scale coarse-to-fine optical flow + 3-layer `8→16→16→7` residual
+     CNN with RGB disocclusion repair, plus AirPods-ANC-inspired
      phase-locked periodic animation cycle prediction for smooth 60/120Hz GIFs and spinners
      over jittery links with instant residual/input cancellation; shows `FG:Neural+` /
      `FG:Flow+` on the HUD when loop-locked).

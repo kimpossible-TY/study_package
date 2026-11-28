@@ -1450,16 +1450,19 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
 #endif
 
 #if TEST_HAS_NEURAL_FLOW_WEIGHTS
-    // 5. Neural 8->8->4 CNN weights & EvalNeuralFlowPatch reference verification
+    // 5. Neural v2 3-layer 8->16->16->7 Residual CNN weights & EvalNeuralFlowPatch verification
     {
         using namespace mac_mirror::neural_flow;
+        CHECK_EQ(kVersion, 2);
         CHECK_EQ(kInChannels, 8);
-        CHECK_EQ(kHiddenChannels, 8);
-        CHECK_EQ(kOutChannels, 4);
-        CHECK_EQ(sizeof(kConv1Weight) / sizeof(float), static_cast<size_t>(8 * 8 * 9));
-        CHECK_EQ(sizeof(kConv1Bias) / sizeof(float), static_cast<size_t>(8));
-        CHECK_EQ(sizeof(kConv2Weight) / sizeof(float), static_cast<size_t>(4 * 8 * 9));
-        CHECK_EQ(sizeof(kConv2Bias) / sizeof(float), static_cast<size_t>(4));
+        CHECK_EQ(kHiddenChannels, 16);
+        CHECK_EQ(kOutChannels, 7);
+        CHECK_EQ(sizeof(kConv1Weight) / sizeof(float), static_cast<size_t>(16 * 8 * 9));
+        CHECK_EQ(sizeof(kConv1Bias) / sizeof(float), static_cast<size_t>(16));
+        CHECK_EQ(sizeof(kConv2Weight) / sizeof(float), static_cast<size_t>(16 * 16 * 9));
+        CHECK_EQ(sizeof(kConv2Bias) / sizeof(float), static_cast<size_t>(16));
+        CHECK_EQ(sizeof(kConv3Weight) / sizeof(float), static_cast<size_t>(7 * 16 * 9));
+        CHECK_EQ(sizeof(kConv3Bias) / sizeof(float), static_cast<size_t>(7));
 
         double weight_energy = 0.0;
         for (float w : kConv1Weight) {
@@ -1472,6 +1475,11 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
             weight_energy += static_cast<double>(w) * static_cast<double>(w);
         }
         for (float b : kConv2Bias) CHECK_TRUE(std::isfinite(b));
+        for (float w : kConv3Weight) {
+            CHECK_TRUE(std::isfinite(w));
+            weight_energy += static_cast<double>(w) * static_cast<double>(w);
+        }
+        for (float b : kConv3Bias) CHECK_TRUE(std::isfinite(b));
         CHECK_TRUE(weight_energy > 1e-4);
 
         // Static Retina glyph edge: I0 == I1, warped_diff=0, v_c=0, alpha=0.5, motion_prior=0
@@ -1484,21 +1492,25 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
                 static_patch[1 * 9 + idx] = luma;              // I1 (identical static text)
                 static_patch[2 * 9 + idx] = 0.0f;              // warped_diff
                 static_patch[3 * 9 + idx] = 0.95f;             // high gradient magnitude
-                static_patch[4 * 9 + idx] = 0.0f;              // vx_c / 12
-                static_patch[5 * 9 + idx] = 0.0f;              // vy_c / 12
+                static_patch[4 * 9 + idx] = 0.0f;              // vx_c / kFlowNormScale
+                static_patch[5 * 9 + idx] = 0.0f;              // vy_c / kFlowNormScale
                 static_patch[6 * 9 + idx] = 0.5f;              // alpha
                 static_patch[7 * 9 + idx] = 0.0f;              // motion_prior
             }
         }
-        float static_out[4] = {};
+        float static_out[7] = {};
         EvalNeuralFlowPatch(static_patch, static_out);
-        for (int c = 0; c < 4; ++c) CHECK_TRUE(std::isfinite(static_out[c]));
-        CHECK_TRUE(static_out[0] >= -3.0f && static_out[0] <= 3.0f);
-        CHECK_TRUE(static_out[1] >= -3.0f && static_out[1] <= 3.0f);
+        for (int c = 0; c < 7; ++c) CHECK_TRUE(std::isfinite(static_out[c]));
+        CHECK_TRUE(static_out[0] >= -kResidualFlowScale && static_out[0] <= kResidualFlowScale);
+        CHECK_TRUE(static_out[1] >= -kResidualFlowScale && static_out[1] <= kResidualFlowScale);
         CHECK_TRUE(static_out[2] >= 0.0f && static_out[2] <= 1.0f);
-        CHECK_TRUE(static_out[3] >= 0.0f && static_out[3] < 0.15f);
+        CHECK_TRUE(static_out[3] >= 0.0f && static_out[3] < 0.08f);
+        for (int c = 4; c < 7; ++c) {
+            CHECK_TRUE(static_out[c] >= -kRgbResidualScale && static_out[c] <= kRgbResidualScale);
+            CHECK_TRUE(std::fabs(static_out[c]) < 0.05f);
+        }
 
-        // Moving Stage Manager window border patch: cross-check EvalNeuralFlowPatch against CNN math
+        // Moving Stage Manager window border patch: verify bounded flow refinement, confidence & RGB residuals
         float motion_patch[8 * 9] = {};
         for (int ic = 0; ic < 8; ++ic) {
             for (int k = 0; k < 9; ++k) {
@@ -1506,41 +1518,21 @@ void TestFrameGenModeCliPrefsAndInterpolator() {
             }
         }
         for (int k = 0; k < 9; ++k) {
-            motion_patch[4 * 9 + k] = 0.35f;   // vx_c / 12
-            motion_patch[5 * 9 + k] = -0.25f;  // vy_c / 12
+            motion_patch[4 * 9 + k] = 0.35f;   // vx_c / kFlowNormScale
+            motion_patch[5 * 9 + k] = -0.25f;  // vy_c / kFlowNormScale
             motion_patch[6 * 9 + k] = 0.5f;    // alpha
             motion_patch[7 * 9 + k] = 1.0f;    // strong motion_prior
         }
-        float motion_out[4] = {};
+        float motion_out[7] = {};
         EvalNeuralFlowPatch(motion_patch, motion_out);
-
-        float hidden[8] = {};
-        for (int oc = 0; oc < 8; ++oc) {
-            float sum = kConv1Bias[oc];
-            for (int ic = 0; ic < 8; ++ic) {
-                for (int k = 0; k < 9; ++k) {
-                    sum += kConv1Weight[oc * 72 + ic * 9 + k] * motion_patch[ic * 9 + k];
-                }
-            }
-            hidden[oc] = (sum > 0.0f) ? sum : 0.0f;
+        for (int c = 0; c < 7; ++c) CHECK_TRUE(std::isfinite(motion_out[c]));
+        CHECK_TRUE(motion_out[0] >= -kResidualFlowScale && motion_out[0] <= kResidualFlowScale);
+        CHECK_TRUE(motion_out[1] >= -kResidualFlowScale && motion_out[1] <= kResidualFlowScale);
+        CHECK_TRUE(motion_out[2] >= 0.0f && motion_out[2] <= 1.0f);
+        CHECK_TRUE(motion_out[3] >= 0.0f && motion_out[3] <= 1.0f);
+        for (int c = 4; c < 7; ++c) {
+            CHECK_TRUE(motion_out[c] >= -kRgbResidualScale && motion_out[c] <= kRgbResidualScale);
         }
-        float raw_out[4] = {};
-        for (int oc = 0; oc < 4; ++oc) {
-            float sum = kConv2Bias[oc];
-            for (int hc = 0; hc < 8; ++hc) {
-                const float hval = hidden[hc];
-                // Conv2 takes 1x1 or 3x3? Wait: Conv2 is 3x3 over hidden feature map on GPU,
-                // while single-patch EvalNeuralFlowPatch uses kConv2Weight! Let's check bounds only
-                // rather than assuming how EvalNeuralFlowPatch pads hidden 3x3!
-                (void)hval;
-                (void)sum;
-            }
-        }
-        (void)raw_out;
-        CHECK_TRUE(std::isfinite(motion_out[0]) && motion_out[0] >= -3.0f && motion_out[0] <= 3.0f);
-        CHECK_TRUE(std::isfinite(motion_out[1]) && motion_out[1] >= -3.0f && motion_out[1] <= 3.0f);
-        CHECK_TRUE(std::isfinite(motion_out[2]) && motion_out[2] >= 0.0f && motion_out[2] <= 1.0f);
-        CHECK_TRUE(std::isfinite(motion_out[3]) && motion_out[3] >= 0.0f && motion_out[3] <= 1.0f);
     }
 #endif
 }
