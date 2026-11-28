@@ -7,17 +7,18 @@ param(
     [switch]$SkipMacMirror,
     [switch]$Update,
     [string]$MacHost,
+    [string]$MacPeer,
     [string]$TailscaleAuthKey
 )
 
 $ErrorActionPreference = "Stop"
 
-$MacMirrorViewerReleaseTag = "mac-mirror-v1.0.0"
-$MacMirrorViewerUrl = "https://github.com/kimpossible-TY/study_package/releases/download/$MacMirrorViewerReleaseTag/mac-mirror-viewer.exe"
+$MacMirrorViewerReleaseTag = "v1.0.0"
+$MacMirrorViewerUrl = "https://github.com/kimpossible-TY/mac-mirror/releases/download/$MacMirrorViewerReleaseTag/mac-mirror-viewer.exe"
 $TigerVncViewerUrl = "https://sourceforge.net/projects/tigervnc/files/stable/1.16.2/vncviewer64-1.16.2.exe/download"
 $TailscaleStableMetaUrl = "https://pkgs.tailscale.com/stable/?mode=json"
 $TailscaleStableBaseUrl = "https://pkgs.tailscale.com/stable"
-$MacMirrorTunnelUrl = "https://raw.githubusercontent.com/kimpossible-TY/study_package/main/mac_vnc_tunnel.py"
+$MacMirrorTunnelUrl = "https://raw.githubusercontent.com/kimpossible-TY/mac-mirror/main/mac_vnc_tunnel.py"
 
 $ScoopPackages = @(
     "7zip",
@@ -498,6 +499,12 @@ function Install-MacMirrorViewer {
             -MaximumRedirection 10 `
             -OutFile $DownloadPath
         if (Test-PeExecutable -Path $DownloadPath -MinBytes 262144) {
+            if (![string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+                $DownloadedSha256 = (Get-FileHash -LiteralPath $DownloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($DownloadedSha256 -ne $ExpectedSha256) {
+                    throw "SHA-256 verification failed for mac-mirror-viewer.exe (expected $ExpectedSha256, got $DownloadedSha256)."
+                }
+            }
             Move-Item -LiteralPath $DownloadPath -Destination $Executable -Force
             Add-UserPathEntry -Directory $InstallDir
             Write-Host "Mac Mirror Viewer installed from GitHub Release: $Executable" -ForegroundColor DarkGray
@@ -791,7 +798,7 @@ Invoke-Step "Preparing Neovim configuration folder..." {
 
 Invoke-Step "Installing Windows Local Auth Cleaner v0.3.0 from GitHub Release..." {
     $CleanerReleaseTag = 'v0.3.0'
-    $ReleaseBase = "https://github.com/kimpossible-TY/study_package/releases/download/$CleanerReleaseTag"
+    $ReleaseBase = "https://github.com/kimpossible-TY/windows-local-auth-cleaner/releases/download/$CleanerReleaseTag"
     $CleanerDir = Join-Path $env:LOCALAPPDATA "Programs\windows-local-auth-cleaner"
     $CleanerExe = Join-Path $CleanerDir "windows-local-auth-cleaner.exe"
     $CleanerShim = Join-Path $CleanerDir "wac.cmd"
@@ -853,6 +860,9 @@ if (!$SkipMacMirror) {
         $MirrorArgs = @()
         if (![string]::IsNullOrWhiteSpace($MacHost)) {
             $MirrorArgs += @("--host", $MacHost)
+        }
+        if (![string]::IsNullOrWhiteSpace($MacPeer)) {
+            $MirrorArgs += @("--peer", $MacPeer)
         }
         if (![string]::IsNullOrWhiteSpace($TailscaleAuthKey)) {
             $MirrorArgs += @("--auth-key", $TailscaleAuthKey)

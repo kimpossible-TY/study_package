@@ -1,5 +1,18 @@
 # study_package
 
+> **Standalone Repositories**
+>
+> The tools originally prototyped here now live in their own dedicated repositories:
+>
+> - **[mac-mirror](https://github.com/kimpossible-TY/mac-mirror)** — Native Direct3D 11 Windows → Mac screen mirroring viewer (`v1.0.0`) and Tailscale userspace launcher (`mac_vnc_tunnel.py`)
+> - **[windows-local-auth-cleaner](https://github.com/kimpossible-TY/windows-local-auth-cleaner)** — Shared-PC browser, developer auth, Dev Tunnel, and Tailscale cleanup utility (`v0.3.0`, `wac`)
+> - **[dotfiles](https://github.com/kimpossible-TY/dotfiles)** — Personal macOS & Windows dotfiles and bootstrapper. New Windows one-liner:
+>   ```powershell
+>   irm https://raw.githubusercontent.com/kimpossible-TY/dotfiles/main/install.ps1 | iex
+>   ```
+>
+> `computer_setting.ps1` in this repository has been updated to pull releases directly from `kimpossible-TY/mac-mirror` (`v1.0.0`) and `kimpossible-TY/windows-local-auth-cleaner` (`v0.3.0`) so existing `irm .../study_package/main/computer_setting.ps1 | iex` invocations continue to work seamlessly.
+
 Subprojects:
 
 - [windows_local_auth_cleaner](windows_local_auth_cleaner/README.md)
